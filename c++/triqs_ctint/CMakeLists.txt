@@ -28,9 +28,8 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DESTINATION include FILES_MATCHING
 
 # ========= Additional Dependencies ==========
 
-find_package(NFFT REQUIRED)
-target_link_libraries(triqs_ctint_c PRIVATE nfft)
-install(TARGETS nfft EXPORT triqs_ctint-targets)
+target_link_libraries(triqs_ctint_c PRIVATE finufft)
+install(TARGETS finufft finufft_f32 finufft_f64 EXPORT triqs_ctint-targets)
 
 # ========= Static Analyzer Checks ==========
 
