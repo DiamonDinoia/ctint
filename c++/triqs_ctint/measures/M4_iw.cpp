@@ -48,30 +48,36 @@ namespace triqs_ctint::measures {
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
-
-    for (int bl1 : range(params.n_blocks())) // FIXME c++17 Loops
-      for (int bl2 : range(params.n_blocks())) {
-        int bl1_size   = M[bl1].target_shape()[0];
-        int bl2_size   = M[bl2].target_shape()[0];
-        auto const &M1 = M[bl1];
-        auto const &M2 = M[bl2];
-        auto &M4       = M4_iw_(bl1, bl2);
-
-        for (auto iw1 : iw_mesh)
-          for (auto iw2 : iw_mesh)
-            for (auto iw3 : iw_mesh)
-              for (int i : range(bl1_size))
-                for (int j : range(bl1_size)) {
-                  auto M1val = M1[iw2.value(), iw1](j, i);
-
-                  for (int k : range(bl2_size))
-                    for (int l : range(bl2_size)) {
-                      auto iw4 = iw1 + iw3 - iw2;
-                      M4[iw1, iw2, iw3](i, j, k, l) += sign * M1val * M2[iw4, iw3](l, k);
-                      if (bl1 == bl2) { M4[iw1, iw2, iw3](i, j, k, l) -= sign * M1[iw4, iw1](l, i) * M2[iw2.value(), iw3](j, k); }
+    // use chrono to measure time
+    const auto start = std::chrono::high_resolution_clock::now();
+    for (auto const bl1 : range(params.n_blocks())) // FIXME c++17 Loops
+      for (auto const bl2 : range(params.n_blocks())) {
+        const auto bl1_size = M[bl1].target_shape()[0];
+        const auto bl2_size = M[bl2].target_shape()[0];
+        auto const M1      = M[bl1];
+        auto const M2      = M[bl2];
+        auto const M4       = M4_iw_(bl1, bl2);
+        for (const auto iw1 : iw_mesh)
+          for (const auto iw2 : iw_mesh)
+            for (const auto iw3 : iw_mesh) {
+              const auto iw4 = iw1 + iw3 - iw2;
+              for (const auto i : range(bl1_size))
+                for (const auto j : range(bl1_size)) {
+                  // flatten left side expr here
+                  const auto M1val = M1[iw2.value(), iw1](j, i);
+                  for (const auto k : range(bl2_size)) {
+                    const auto M2val = M2[iw2.value(), iw3](j, k);
+                    for (const auto l : range(bl2_size)) {
+                      M4[iw1, iw2, iw3](i, j, k, l) +=
+                         sign * (M1val * M2[iw4, iw3](l, k) - (__builtin_expect(bl1 == bl2, false) ? M1[iw4, iw1](l, i) * M2val : 0));
                     }
+                  }
                 }
+            }
       }
+    const auto end                        = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
+    std::cout << "M4_iw: " << elapsed.count() << " seconds" << std::endl;
   }
 
   void M4_iw::collect_results(mpi::communicator const &comm) {
