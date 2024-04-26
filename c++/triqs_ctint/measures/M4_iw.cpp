@@ -48,7 +48,6 @@ namespace triqs_ctint::measures {
 
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
     // use chrono to measure time
-    const auto start = std::chrono::high_resolution_clock::now();
     for (auto const bl1 : range(params.n_blocks())) // FIXME c++17 Loops
       for (auto const bl2 : range(params.n_blocks())) {
         const auto bl1_size = M[bl1].target_shape()[0];
@@ -74,9 +73,6 @@ namespace triqs_ctint::measures {
                 }
             }
       }
-    const auto end                        = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "M4_iw: " << elapsed.count() << " seconds" << std::endl;
   }
 
   void M4_iw::collect_results(mpi::communicator const &comm) {
