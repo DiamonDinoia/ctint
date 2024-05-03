@@ -50,87 +50,70 @@ namespace triqs_ctint::measures {
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
-    for (auto const bl1 : range(params.n_blocks())) {
-      for (auto const bl2 : range(params.n_blocks())) {
-        const auto bl1_size = M[bl1].target_shape()[0];
-        const auto bl2_size = M[bl2].target_shape()[0];
-        auto const M1       = M[bl1];
-        auto const M2       = M[bl2];
-        auto const M4       = M4_iw_(bl1, bl2);
-        for (const auto iw1 : iw_mesh) {
-          for (const auto iw2 : iw_mesh) {
-            for (const auto iw3 : iw_mesh) {
-              const auto iw4           = iw1 + iw3 - iw2;
-              const auto total_size    = bl1_size * bl1_size * bl2_size * bl2_size;
-              const auto bl2_size2     = bl2_size * bl2_size;
-              const auto inv_bl2_size2 = 1 / bl2_size2;
-              const auto remainder     = total_size % 2;
-
-              // vectorize over the total size using intrinsics
-              for (int index = 0; index < total_size - remainder; index += 2) { // Note: AVX2 can handle 2 complex doubles at a time
-                const auto ij     = index * inv_bl2_size2;
-                const auto kl     = index % bl2_size2;
-                const auto M1val  = M1[iw2.value(), iw1].data()[ij];
-                __m256d M1val_vec = _mm256_loadu_pd((double *)(M1[iw2.value(), iw1].data() + ij));
-                __m256d M2_vec    = _mm256_loadu_pd((double *)(M2[iw4, iw3].data() + kl));
-                // Multiply M1val and M2
-                __m256d M1val_real = _mm256_permute_pd(M1val_vec, 0x0); // Real parts of M1val
-                __m256d M1val_imag = _mm256_permute_pd(M1val_vec, 0xF); // Imaginary parts of M1val
-                __m256d M2_real    = _mm256_permute_pd(M2_vec, 0x0);    // Real parts of M2
-                __m256d M2_imag    = _mm256_permute_pd(M2_vec, 0xF);    // Imaginary parts of M2
-
-                __m256d real = _mm256_sub_pd(_mm256_mul_pd(M1val_real, M2_real), _mm256_mul_pd(M1val_imag, M2_imag));
-                __m256d imag = _mm256_add_pd(_mm256_mul_pd(M1val_real, M2_imag), _mm256_mul_pd(M1val_imag, M2_real));
-
-                // Multiply by sign
-                __m256d sign_vec = _mm256_set1_pd(sign);
-                real             = _mm256_mul_pd(real, sign_vec);
-                imag             = _mm256_mul_pd(imag, sign_vec);
-
-                // Add to M4
-                __m256d M4_vec  = _mm256_loadu_pd((double *)(M4[iw1, iw2, iw3].data() + index));
-                __m256d M4_real = _mm256_permute_pd(M4_vec, 0x0); // Real parts of M4
-                __m256d M4_imag = _mm256_permute_pd(M4_vec, 0xF); // Imaginary parts of M4
-
-                M4_real = _mm256_add_pd(M4_real, real);
-                M4_imag = _mm256_add_pd(M4_imag, imag);
-
+    const auto v_sign = _mm512_set1_pd(sign);
+    for (int bl1 : range(params.n_blocks())) // FIXME c++17 Loops
+      for (int bl2 : range(params.n_blocks())) {
+        int bl1_size   = M[bl1].target_shape()[0];
+        int bl2_size   = M[bl2].target_shape()[0];
+        auto const &M1 = M[bl1];
+        auto const &M2 = M[bl2];
+        auto &M4       = M4_iw_(bl1, bl2);
+        for (auto iw1 : iw_mesh)
+          for (auto iw2 : iw_mesh)
+            for (auto iw3 : iw_mesh) {
+              const auto total_size = bl1_size * bl1_size * bl2_size * bl2_size;
+              const auto iw4        = iw1 + iw3 - iw2;
+              const auto remainder = total_size % 4;
+              const auto inv_bl1_size_cubed = 1 / (bl1_size * bl2_size * bl2_size);
+              const auto inv_bl2_size_squared = 1 / (bl2_size * bl2_size);
+              const auto inv_bl1_size = 1 / bl1_size;
+              const auto inv_bl1_size_squared = 1 / (bl1_size * bl1_size);
+              const auto bl12 = (bl1_size * bl2_size);
+              for (auto index = 0; index < total_size - remainder; index += 4) {
+                // Load complex numbers as pairs of doubles
+                const auto li = index * inv_bl1_size_cubed;
+                const auto jk = (index * inv_bl2_size_squared) % bl12;
+                const auto lk = (index * inv_bl1_size) % bl12;
+                const auto ji = index * inv_bl1_size_squared;
+                const auto M1val_v = _mm512_loadu_pd(reinterpret_cast<double*>(M1[iw2.value(), iw1].data()+ji));
+                const auto M2_lk_v = _mm512_loadu_pd(reinterpret_cast<double*>(M2[iw4, iw3].data()+lk));
+                const auto M1_li_v = _mm512_loadu_pd(reinterpret_cast<double*>(M1[iw4, iw1].data()+li));
+                const auto M2_jk_v = _mm512_loadu_pd(reinterpret_cast<double*>(M2[iw2.value(), iw3].data()+jk));
+                const auto M4_v = _mm512_loadu_pd(reinterpret_cast<double*>(M4[iw1, iw2, iw3].data()+index));
+                // Separate real and imaginary parts
+                const auto idx_even = _mm512_set_epi64(6, 4, 2, 0, 6, 4, 2, 0);
+                const auto idx_odd = _mm512_set_epi64(7, 5, 3, 1, 7, 5, 3, 1);
+                const auto M1val_real_v = _mm512_permutexvar_pd(idx_even, M1val_v);
+                const auto M1val_imag_v = _mm512_permutexvar_pd(idx_odd, M1val_v);
+                const auto M2_lk_real_v = _mm512_permutexvar_pd(idx_even, M2_lk_v);
+                const auto M2_lk_imag_v = _mm512_permutexvar_pd(idx_odd, M2_lk_v);
+                const auto M1_li_real_v = _mm512_permutexvar_pd(idx_even, M1_li_v);
+                const auto M1_li_imag_v = _mm512_permutexvar_pd(idx_odd, M1_li_v);
+                const auto M2_jk_real_v = _mm512_permutexvar_pd(idx_even, M2_jk_v);
+                const auto M2_jk_imag_v = _mm512_permutexvar_pd(idx_odd, M2_jk_v);
+                const auto M4_real_v = _mm512_permutexvar_pd(idx_even, M4_v);
+                const auto M4_imag_v = _mm512_permutexvar_pd(idx_odd, M4_v);
+                // Perform the operations
+                auto result_real_v = _mm512_add_pd(M4_real_v, _mm512_mul_pd(v_sign, _mm512_sub_pd(_mm512_mul_pd(M1val_real_v, M2_lk_real_v), _mm512_mul_pd(M1val_imag_v, M2_lk_imag_v))));
+                auto result_imag_v = _mm512_add_pd(M4_imag_v, _mm512_mul_pd(v_sign, _mm512_add_pd(_mm512_mul_pd(M1val_real_v, M2_lk_imag_v), _mm512_mul_pd(M1val_imag_v, M2_lk_real_v))));
+                result_real_v = __builtin_expect(!!bl1 == bl2, 0) ? _mm512_sub_pd(result_real_v, _mm512_mul_pd(v_sign, _mm512_sub_pd(_mm512_mul_pd(M1_li_real_v, M2_jk_real_v), _mm512_mul_pd(M1_li_imag_v, M2_jk_imag_v)))) : result_real_v;
+                result_imag_v = __builtin_expect(!!bl1 == bl2, 0) ? _mm512_sub_pd(result_imag_v, _mm512_mul_pd(v_sign, _mm512_add_pd(_mm512_mul_pd(M1_li_real_v, M2_jk_imag_v), _mm512_mul_pd(M1_li_imag_v, M2_jk_real_v)))) : result_imag_v;
+                // Pack real and imaginary parts back together
+                const auto result_v = _mm512_unpacklo_pd(result_real_v, result_imag_v);
                 // Store the result back into M4
-                __m256d result = _mm256_unpacklo_pd(M4_real, M4_imag); // Interleave real and imaginary parts
-                _mm256_storeu_pd((double *)(M4[iw1, iw2, iw3].data() + index), result);
+                _mm512_storeu_pd(reinterpret_cast<double*>(M4[iw1, iw2, iw3].data()+index), result_v);
               }
-              for (int index = total_size - remainder; index < total_size; index++) {
-                const auto ij = index * inv_bl2_size2;
-                const auto kl = index % bl2_size2;
-                M4[iw1, iw2, iw3].data()[index] += sign * M1[iw2.value(), iw1].data()[ij] * M2[iw4, iw3].data()[kl];
-              }
-            }
-          }
-        }
-      }
-    }
-
-    for (auto const bl1 : range(params.n_blocks())) {
-      const auto bl1_size = M[bl1].target_shape()[0];
-      const auto bl2_size = M[bl1].target_shape()[0];
-      auto const M1       = M[bl1];
-      auto const M2       = M[bl1];
-      auto const M4       = M4_iw_(bl1, bl1);
-      for (const auto iw1 : iw_mesh) {
-        for (const auto iw2 : iw_mesh) {
-          for (const auto iw3 : iw_mesh) {
-            const auto iw4 = iw1 + iw3 - iw2;
-            for (const auto i : range(bl1_size)) {
-              for (const auto j : range(bl1_size)) {
-                for (const auto k : range(bl2_size)) {
-                  for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= sign * M1[iw4, iw1](l, i) * M2[iw2.value(), iw3](j, k); }
-                }
+              for (int index = total_size - remainder; index < total_size; ++index) {
+                const auto li = index / (bl1_size * bl2_size * bl2_size);
+                const auto jk = (index / (bl2_size * bl2_size)) % (bl1_size * bl2_size);
+                const auto lk = (index / bl1_size) % (bl2_size * bl2_size);
+                const auto ji = index % (bl1_size * bl1_size);
+                auto M1val    = M1[iw2.value(), iw1].data()[ji];
+                M4[iw1, iw2, iw3].data()[index] += sign * M1val * M2[iw4, iw3].data()[lk];
+                M4[iw1, iw2, iw3].data()[index] -= bl1 == bl2 ? sign * M1[iw4, iw1].data()[li] * M2[iw2.value(), iw3].data()[jk] : 0 ;
               }
             }
-          }
-        }
       }
-    }
   }
 
   void M4_iw::collect_results(mpi::communicator const &comm) {
