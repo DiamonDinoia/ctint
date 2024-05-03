@@ -59,6 +59,7 @@ namespace triqs_ctint::measures {
         auto &M4       = M4_iw_(bl1, bl2);
         for (auto iw1 : iw_mesh)
           for (auto iw2 : iw_mesh)
+#pragma clang l
             for (auto iw3 : iw_mesh) {
               const auto total_size = bl1_size * bl1_size * bl2_size * bl2_size;
               const auto iw4        = iw1 + iw3 - iw2;
