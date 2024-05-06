@@ -1,23 +1,5 @@
 #include "./M4_iw.hpp"
-#include <cmath>
-
-#include <immintrin.h> // for AVX2 intrinsics
-
-__attribute__((always_inline)) inline static std::pair<__m512d, __m512d> separate_real_imaginary(const __m512d v1, const __m512d v2) noexcept {
-  // Create index vectors for separating real and imaginary parts
-  static const __m512i idx_real = _mm512_set_epi64(14, 12, 10, 8, 6, 4, 2, 0);
-  static const __m512i idx_imag = _mm512_set_epi64(15, 13, 11, 9, 7, 5, 3, 1);
-  // Separate real and imaginary parts
-  __m512d real_v = _mm512_permutex2var_pd(v1, idx_real, v2);
-  __m512d imag_v = _mm512_permutex2var_pd(v1, idx_imag, v2);
-  return {real_v, imag_v};
-}
-__attribute__((always_inline)) inline static std::pair<__m512d, __m512d> interleave_vectors(__m512d v1, __m512d v2) noexcept {
-  // Create index vectors for interleaving
-  __m512d interleave_v1 = _mm512_unpacklo_pd(v1, v2); // {a1, b1, a2, b2, a3, b3, a4, b4}
-  __m512d interleave_v2 = _mm512_unpackhi_pd(v1, v2); // {a5, b5, a6, b6, a7, b7, a8, b8}
-  return {interleave_v1, interleave_v2};
-}
+#include "./intrinsics.h"
 
 namespace triqs_ctint::measures {
 
@@ -65,80 +47,48 @@ namespace triqs_ctint::measures {
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
-    const auto v_sign = _mm512_set1_pd(sign);
-    for (int bl1 : range(params.n_blocks())) // FIXME c++17 Loops
-      for (int bl2 : range(params.n_blocks())) {
-        auto const bl1_size   = M[bl1].target_shape()[0];
-        auto const bl2_size   = M[bl2].target_shape()[0];
-        auto const M1 = M[bl1];
-        auto const M2 = M[bl2];
-        auto M4       = M4_iw_(bl1, bl2);
-        for (auto iw1 : iw_mesh)
-          for (auto iw2 : iw_mesh)
-#pragma clang loop unroll_count(16)
-            for (auto iw3 : iw_mesh) {
-              const auto iw4        = iw1 + iw3 - iw2;
-              const auto total_size = bl1_size * bl1_size * bl2_size * bl2_size;
-              const auto remainder            = total_size % 8;
-              const auto inv_bl1_size_cubed = 1 / (bl1_size * bl2_size * bl2_size);
-              const auto inv_bl2_size_squared = 1 / (bl2_size * bl2_size);
-              const auto inv_bl1_size = 1 / bl1_size;
-              const auto inv_bl1_size_squared = 1 / (bl1_size * bl1_size);
-              const auto bl12 = (bl1_size * bl2_size);
-              for (auto index = 0; index < total_size - remainder; index += 8) {
-                // Load complex numbers as pairs of doubles
-                const auto li1    = index * inv_bl1_size_cubed;
-                const auto jk1    = (index * inv_bl2_size_squared) % bl12;
-                const auto lk1    = (index * inv_bl1_size) % bl12;
-                const auto ji1    = index * inv_bl1_size_squared;
-                const auto index2 = index + 4;
-                const auto li2    = index2 * inv_bl1_size_cubed;
-                const auto jk2    = (index2 * inv_bl2_size_squared) % bl12;
-                const auto lk2    = (index2 * inv_bl1_size) % bl12;
-                const auto ji2    = index2 * inv_bl1_size_squared;
-                // Separate real and imaginary parts
-                const auto [M1val_real_v, M1val_imag_v] =
-                   separate_real_imaginary(_mm512_loadu_pd(reinterpret_cast<double *>(M1[iw2.value(), iw1].data() + ji1)),
-                                           _mm512_loadu_pd(reinterpret_cast<double *>(M1[iw2.value(), iw1].data() + ji2)));
-                const auto [M2_lk_real_v, M2_lk_imag_v] =
-                   separate_real_imaginary(_mm512_loadu_pd(reinterpret_cast<double *>(M2[iw4, iw3].data() + lk1)),
-                                           _mm512_loadu_pd(reinterpret_cast<double *>(M2[iw4, iw3].data() + lk2)));
-                const auto [M1_li_real_v, M1_li_imag_v] =
-                   separate_real_imaginary(_mm512_loadu_pd(reinterpret_cast<double *>(M1[iw4, iw1].data() + li1)),
-                                           _mm512_loadu_pd(reinterpret_cast<double *>(M1[iw4, iw1].data() + li2)));
 
-                const auto [M2_jk_real_v, M2_jk_imag_v] =
-                   separate_real_imaginary(_mm512_loadu_pd(reinterpret_cast<double *>(M2[iw2.value(), iw3].data() + jk1)),
-                                           _mm512_loadu_pd(reinterpret_cast<double *>(M2[iw2.value(), iw3].data() + jk2)));
-                const auto [M4_real_v, M4_imag_v] =
-                   separate_real_imaginary(_mm512_loadu_pd(reinterpret_cast<double *>(M4[iw1, iw2, iw3].data() + index)),
-                                           _mm512_loadu_pd(reinterpret_cast<double *>(M4[iw1, iw2, iw3].data() + index2)));
-                // Perform the operations
-                auto result_real_v = _mm512_add_pd(M4_real_v, _mm512_mul_pd(v_sign, _mm512_sub_pd(_mm512_mul_pd(M1val_real_v, M2_lk_real_v), _mm512_mul_pd(M1val_imag_v, M2_lk_imag_v))));
-                auto result_imag_v = _mm512_add_pd(M4_imag_v, _mm512_mul_pd(v_sign, _mm512_add_pd(_mm512_mul_pd(M1val_real_v, M2_lk_imag_v), _mm512_mul_pd(M1val_imag_v, M2_lk_real_v))));
-                if (bl1==bl2) [[unlikely]]{
-                  result_real_v = _mm512_sub_pd(result_real_v, _mm512_mul_pd(v_sign, _mm512_sub_pd(_mm512_mul_pd(M1_li_real_v, M2_jk_real_v), _mm512_mul_pd(M1_li_imag_v, M2_jk_imag_v))));
-                  result_imag_v = _mm512_sub_pd(result_imag_v, _mm512_mul_pd(v_sign, _mm512_add_pd(_mm512_mul_pd(M1_li_real_v, M2_jk_imag_v), _mm512_mul_pd(M1_li_imag_v, M2_jk_real_v))));
-                }
-                // Pack real and imaginary parts back together
-                const auto [result_a, result_b] = interleave_vectors(result_real_v, result_imag_v);
-                // Store the result back into M4
-                _mm512_storeu_pd(reinterpret_cast<double *>(M4[iw1, iw2, iw3].data() + index), result_a);
-                _mm512_storeu_pd(reinterpret_cast<double *>(M4[iw1, iw2, iw3].data() + index2), result_b);
-              }
-              if (remainder) [[unlikely]] {
-                for (auto index = total_size - remainder; index < total_size; ++index) {
-                const auto li = index / (bl1_size * bl2_size * bl2_size);
-                const auto jk = (index / (bl2_size * bl2_size)) % (bl1_size * bl2_size);
-                const auto lk = (index / bl1_size) % (bl2_size * bl2_size);
-                const auto ji = index % (bl1_size * bl1_size);
-                auto M1val    = M1[iw2.value(), iw1].data()[ji];
-                M4[iw1, iw2, iw3].data()[index] += sign * M1val * M2[iw4, iw3].data()[lk];
-                M4[iw1, iw2, iw3].data()[index] -= bl1 == bl2 ? sign * M1[iw4, iw1].data()[li] * M2[iw2.value(), iw3].data()[jk] : 0;
+    for (const int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
+      for (const int bl2 : range(params.n_blocks())) {
+        auto const bl1_size = M[bl1].target_shape()[0];
+        auto const bl2_size = M[bl2].target_shape()[0];
+        auto const M1       = M[bl1];
+        auto const M2       = M[bl2];
+        auto M4             = M4_iw_(bl1, bl2);
+        for (const auto &iw1 : iw_mesh) {
+          for (const auto &iw2 : iw_mesh) {
+            for (const auto &iw3 : iw_mesh) {
+              const auto iw4 = iw1 + iw3 - iw2;
+              for (auto i : range(bl1_size)) {
+                for (auto j : range(bl1_size)) {
+                  const auto M1val                = M1[iw2.value(), iw1](j, i) * sign;
+#ifdef USE_INTRINSICS
+                  const auto [M1s_real, M1s_imag] = set_vector_to_complex(M1val);
+                  for (auto index = 0; index < (bl2_size * bl2_size); index += 8) {
+                    const auto [real, imag]                   = load_and_separate(M2[iw4, iw3].data() + index);
+                    const auto [real_res, imag_res]           = complex_mul_avx512(M1s_real, M1s_imag, real, imag);
+                    const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
+                    std::complex<double>* m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0);
+                    const auto [M4v1, M4v2]                   = load(m4_ptr+index);
+                    _mm512_storeu_pd((m4_ptr+index+0), M4v1+interleave_v1);
+                    _mm512_storeu_pd((m4_ptr+index+4), M4v1+interleave_v2);
+                  }
+#else
+#pragma clang loop vectorize(enable) unroll_count(2)
+                  for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
+#endif
+                  if (bl1 == bl2) {
+                    for (int k : range(bl2_size)) {
+                      for (int l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= sign * M1[iw4, iw1](l, i) * M2[iw2.value(), iw3](j, k); }
+                    }
+                  }
                 }
               }
             }
+          }
+        }
       }
+    }
   }
 
   void M4_iw::collect_results(mpi::communicator const &comm) {
