@@ -1,5 +1,7 @@
 #include "./M4_iw.hpp"
+#ifdef  USE_INTRINSICS
 #include "./intrinsics.h"
+#endif
 
 namespace triqs_ctint::measures {
 

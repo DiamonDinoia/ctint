@@ -1,5 +1,5 @@
 #pragma once
-
+#ifdef  USE_INTRINSICS
 #include <immintrin.h> // for AVX2 intrinsics
 #include <utility>
 #include <complex>
@@ -57,3 +57,5 @@ __attribute__((always_inline)) inline static std::pair<__m512d, __m512d> complex
   // Interleave real and imaginary parts
   return {real, imag};
 }
+
+#endif
