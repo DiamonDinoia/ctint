@@ -10,6 +10,7 @@ set(all_tests
   gf_real_imag.cpp
   nfft_buf.cpp
   solver_hdf5.cpp
+  intrinsics.cpp
 )
 #file(GLOB_RECURSE all_tests RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} *.cpp)
 
