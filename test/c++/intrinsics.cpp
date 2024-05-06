@@ -5,6 +5,8 @@
 #include <random>
 #include <algorithm>
 
+#ifdef  USE_INTRINSICS
+
 class IntrinsicsTest : public ::testing::Test {
   protected:
   std::array<std::complex<double>, 4> a, b, c, d;
@@ -120,3 +122,8 @@ TEST_F(IntrinsicsTest, ComplexMulAvx512) {
     EXPECT_DOUBLE_EQ((ab[i]*cd[i]).imag(), imag[i]);
   }
 }
+#else
+int main(){
+  return 0;
+}
+#endif
