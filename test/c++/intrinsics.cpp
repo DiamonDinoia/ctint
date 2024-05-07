@@ -48,6 +48,12 @@ std::string print_vector(__m512d v) {
 
 TEST_F(IntrinsicsTest, SeparateRealImaginary) {
   auto [real, imag] = separate_real_imaginary(v_a, v_b);
+  std::string v_str = "\n";
+  v_str += "v_a = " + print_vector(v_a) + "\n";
+  v_str += "v_b = " + print_vector(v_b) + "\n";
+  v_str += "rea = " + print_vector(real) + "\n";
+  v_str += "ima = " + print_vector(imag) + "\n";
+  SCOPED_TRACE(v_str);
   for (int i = 0; i < 4; ++i) {
     EXPECT_DOUBLE_EQ(a[i].real(), real[i]);
     EXPECT_DOUBLE_EQ(a[i].imag(), imag[i]);
