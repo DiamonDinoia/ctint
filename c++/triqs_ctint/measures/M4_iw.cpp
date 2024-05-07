@@ -67,7 +67,9 @@ namespace triqs_ctint::measures {
                   const auto M1val                = M1[iw2.value(), iw1](j, i) * sign;
 #ifdef USE_INTRINSICS
                   const auto [M1s_real, M1s_imag] = set_vector_to_complex(M1val);
-                  for (auto index = 0; index < (bl2_size * bl2_size); index += 8) {
+                  const auto bl2square = bl2_size * bl2_size;
+                  const auto [size, remainder] = std::div(bl2square, 8L);
+                  for (auto index = 0; index < bl2square-remainder; index += 8) {
                     const auto [real, imag]                   = load_and_separate(M2[iw4, iw3].data() + index);
                     const auto [real_res, imag_res]           = complex_mul_avx512(M1s_real, M1s_imag, real, imag);
                     const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
@@ -76,13 +78,20 @@ namespace triqs_ctint::measures {
                     _mm512_storeu_pd((m4_ptr+index+0), M4v1+interleave_v1);
                     _mm512_storeu_pd((m4_ptr+index+4), M4v1+interleave_v2);
                   }
+                  if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
+                    for (auto index = bl2square-remainder; index < bl2square; index++) {
+                      (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index];
+                    }
+                  }
 #else
 #pragma clang loop vectorize(enable) unroll_count(2)
                   for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
 #endif
-                  if (bl1 == bl2) {
-                    for (int k : range(bl2_size)) {
-                      for (int l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= sign * M1[iw4, iw1](l, i) * M2[iw2.value(), iw3](j, k); }
+                  if (bl1 == bl2) [[unlikely]] {
+                    for (const auto k : range(bl2_size)) {
+                      const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
+                      for (const auto l : range(bl2_size)) {
+                        M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
                     }
                   }
                 }
