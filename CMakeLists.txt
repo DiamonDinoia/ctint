@@ -62,7 +62,7 @@ list(APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/share/cmake/Modules)
 
 # ############
 # CMake Options
-add_compile_options(-mavx512f)
+
 # Default to Release build type
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Type of build" FORCE)
@@ -135,6 +135,8 @@ include(GNUInstallDirs)
 
 # #############
 # Build Project
+add_compile_definitions(-DUSE_INTRINSICS)
+add_compile_options(-mavx512f -ffp-contract=fast)
 
 # Find / Build dependencies
 add_subdirectory(deps)
