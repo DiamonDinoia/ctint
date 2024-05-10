@@ -65,21 +65,25 @@ namespace triqs_ctint::measures {
                 for (auto j : range(bl1_size)) {
                   const auto M1val                = M1[iw2.value(), iw1](j, i) * sign;
 #ifdef USE_INTRINSICS
-                  const auto [M1s_real, M1s_imag] = set_vector_to_complex(M1val);
-                  const auto bl2square = bl2_size * bl2_size;
-                  const auto [size, remainder] = std::div(bl2square, 8L);
-                  for (auto index = 0; index < bl2square-remainder; index += 8) {
-                    const auto [real, imag]                   = load_and_separate(M2[iw4, iw3].data() + index);
-                    const auto [real_res, imag_res]           = complex_mul_avx512(M1s_real, M1s_imag, real, imag);
-                    const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
-                    std::complex<double>* m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0);
-                    const auto [M4v1, M4v2]                   = load(m4_ptr+index);
-                    _mm512_storeu_pd((m4_ptr+index+0), M4v1+interleave_v1);
-                    _mm512_storeu_pd((m4_ptr+index+4), M4v1+interleave_v2);
-                  }
-                  if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
-                    for (auto index = bl2square-remainder; index < bl2square; index++) {
-                      (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index];
+                  {
+                    const auto bl2square            = bl2_size * bl2_size;
+                    static constexpr auto Elems     = 8L;
+                    using Type                      = decltype(M1val.real());
+                    const auto remainder            = bl2square & (Elems - 1);
+                    const auto [M1s_real, M1s_imag] = set_vector_to_complex<Vec<Type, Elems>>(M1val);
+                    for (auto index = 0; index < bl2square - remainder; index += Elems) {
+                      const auto [real, imag]                   = load_and_separate<Type, Elems>(M2[iw4, iw3].data() + index);
+                      const auto [real_res, imag_res]           = complex_mul(M1s_real, M1s_imag, real, imag);
+                      const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
+                      auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
+                      const auto [M4v1, M4v2]                   = load<Type, Elems>(m4_ptr);
+                      store(m4_ptr + 0, M4v1 + interleave_v1);
+                      store(m4_ptr + Elems / 2, M4v2 + interleave_v2);
+                    }
+                    if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
+                      for (auto index = bl2square - remainder; index < bl2square; index++) {
+                        (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index];
+                      }
                     }
                   }
 #else
@@ -89,8 +93,28 @@ namespace triqs_ctint::measures {
                   if (bl1 == bl2) [[unlikely]] {
                     for (const auto k : range(bl2_size)) {
                       const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-                      for (const auto l : range(bl2_size)) {
-                        M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
+#ifdef USE_INTRINSICS
+                      static constexpr auto Elems     = 4L;
+                      using Type                      = decltype(M2sval.real());
+                      const auto remainder            = bl2_size & (Elems - 1);
+                      const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, Elems>>(M2sval);
+                      for (auto index = 0; index < bl2_size - remainder; index += Elems) {
+                        const auto [real, imag]                   = load_and_separate<Type, Elems>(&M1[iw4, iw1](index, i));
+                        const auto [real_res, imag_res]           = complex_mul(M2s_real, M2s_imag, real, imag);
+                        const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
+                        auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, k, index);
+                        const auto [M4v1, M4v2]                   = load<Type, Elems>(m4_ptr);
+                        store(m4_ptr + 0, M4v1 - interleave_v1);
+                        store(m4_ptr + Elems / 2, M4v2 - interleave_v2);
+                      }
+                      if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
+                        for (auto index = bl2_size - remainder; index < bl2_size; index++) {
+                          M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i);
+                        }
+                      }
+#else
+                      for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
+#endif
                     }
                   }
                 }
