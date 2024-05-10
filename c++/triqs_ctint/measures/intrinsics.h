@@ -9,9 +9,13 @@
 
 template <class T, std::uint8_t elems> using Vec = T __attribute__((vector_size(elems * sizeof(T))));
 
+
 template <std::size_t... I>
 __attribute__((always_inline)) inline static constexpr auto permute_vectors(std::index_sequence<I...>, const auto v1, const auto v2) noexcept {
+  // I  -> [0, 2N] where N is the number of elements in the vector
+  // if i < N then return v1[i] else return v2[i - N]
   return __builtin_shufflevector(v1, v2, I...);
+
 }
 
 __attribute__((always_inline)) inline static constexpr auto separate_real_imaginary(const auto &v1, const auto &v2) noexcept {
@@ -28,30 +32,30 @@ __attribute__((always_inline)) inline static constexpr auto separate_real_imagin
   return std::make_pair(real_v, imag_v);
 }
 
-__attribute__((always_inline)) inline constexpr static auto interleave_vectors(const auto v1, const auto v2) noexcept {
+__attribute__((always_inline)) inline constexpr static auto interleave_vectors(const auto real, const auto imag) noexcept {
   // Create index vectors for interleaving
   static constexpr auto generate_indices = []<std::size_t S, std::size_t N, std::size_t add_even, std::size_t add_odd>() constexpr {
     return []<std::size_t... I>(std::index_sequence<I...>) {
       return std::index_sequence<(I % 2 == 0 ? S + I / 2 + add_even : S + I / 2 + add_odd)...>{};
     }(std::make_index_sequence<N>{});
   };
-  static constexpr auto N = sizeof(decltype(v1)) / sizeof(decltype(v1[0]));
+  static constexpr auto N = sizeof(decltype(real)) / sizeof(decltype(real[0]));
   //{0, 8, 1, 9, 2, 10, 3, 11}
   static constexpr auto idx_real = generate_indices.template operator()<0 / 1, N, 0, N>();
   //{4, 12, 5, 13, 6, 14, 7, 15}
   static constexpr auto idx_imag = generate_indices.template operator()<N / 2, N, 0, N>();
   // Separate real and imaginary parts
-  const auto &&real_v = permute_vectors(idx_real, v1, v2);
-  const auto &&imag_v = permute_vectors(idx_imag, v1, v2);
-  return std::make_pair(real_v, imag_v);
+  const auto &&res1 = permute_vectors(idx_real, real, imag);
+  const auto &&res2 = permute_vectors(idx_imag, real, imag);
+  return std::make_pair(res1, res2);
 }
 
 // TODO: this can be more general, loading complex numbers of any size
 template <typename T, const size_t elems> __attribute__((always_inline)) inline static auto load(const std::complex<T> *const __restrict__ a) {
   Vec<T, elems> va0{};
   Vec<T, elems> va1{};
-  memcpy(&va0,  a, sizeof(T) * elems);
-  memcpy(&va1, a + elems / 2, sizeof(T) * elems);
+  std::memcpy(&va0,  a, sizeof(T) * elems);
+  std::memcpy(&va1, a + elems / 2, sizeof(T) * elems);
   return std::make_pair(va0, va1);
 }
 
