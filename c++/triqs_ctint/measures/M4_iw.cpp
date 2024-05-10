@@ -96,7 +96,7 @@ namespace triqs_ctint::measures {
 #ifdef USE_INTRINSICS
                       static constexpr auto Elems     = 4L;
                       using Type                      = decltype(M2sval.real());
-                      const auto remainder            = bl2_size & (Elems - 1);
+                      const auto remainder            = bl2_size & (Elems - 1); // mod Elems
                       const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, Elems>>(M2sval);
                       for (auto index = 0; index < bl2_size - remainder; index += Elems) {
                         const auto [real, imag]                   = load_and_separate<Type, Elems>(&M1[iw4, iw1](index, i));
