@@ -72,10 +72,17 @@ S.solve(
 
 # -------- Save in archive ---------
 with HDFArchive("%s.ref.h5" % test_name, "r") as arch:
-    assert_gfs_are_close(S.M4_iw['up','up'][0,0,0,0], arch["M4_iw"])
+    assert_gfs_are_close(S.M4_iw['up','dn'][0,0,0,0], arch["M4_iw_ud_0000"], 1e-12)
+    assert_gfs_are_close(S.M4_iw['up','dn'][0,1,2,3], arch["M4_iw_ud_0123"], 1e-12)
+    assert_gfs_are_close(S.M4_iw['up','up'][0,0,0,0], arch["M4_iw_uu_0000"], 1e-12)
+    assert_gfs_are_close(S.M4_iw['up','up'][0,1,2,3], arch["M4_iw_uu_0123"], 1e-12)
 
 # with HDFArchive("%s.out.h5" % test_name, "w") as arch:
-    # arch["M4_iw"] = S.M4_iw['up','up'][0,0,0,0]
+    # arch["M4_iw_ud_0000"] = S.M4_iw['up','dn'][0,0,0,0]
+    # arch["M4_iw_ud_0123"] = S.M4_iw['up','dn'][0,1,2,3]
+    # arch["M4_iw_uu_0000"] = S.M4_iw['up','up'][0,0,0,0]
+    # arch["M4_iw_uu_0123"] = S.M4_iw['up','up'][0,1,2,3]
+    # arch["M4_iw"] = S.M4_iw
     # arch["G0_iw"] = S.G0_iw
     # arch["G_iw"] = S.G_iw
     # arch["G2_iw"] = S.G2_iw
