@@ -43,18 +43,9 @@ namespace triqs_ctint::measures {
     // Container of nfft_buffers: buf_arrarr(block)(u_j,u_i)
     array<array<nfft_buf_t<2>, 2>, 1> buf_arrarr;
 
-    struct matrix_trasposed {
-      static constexpr int rank       = 2;
-      static constexpr int is_real    = false;
-      static constexpr bool is_matrix = true;
-      using scalar_t                  = dcomplex;
-      using value_t                   = nda::matrix<scalar_t, F_layout>;
-      using real_t                    = matrix_real_valued;
-      using complex_t                 = matrix_valued;
-    };
-
     // Intermediate scattering matrix in the measurement of M4
-    block_gf<prod<imfreq, imfreq>, matrix_trasposed> M;
+    using M_layout = nda::contiguous_layout_with_stride_order<nda::encode(std::array{0, 1, 3, 2})>;
+    block_gf<prod<imfreq, imfreq>, matrix_valued, M_layout> M;
   };
 
 } // namespace triqs_ctint::measures
