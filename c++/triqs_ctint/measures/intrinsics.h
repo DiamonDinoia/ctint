@@ -60,10 +60,8 @@ template <typename T, const size_t elems> __attribute__((always_inline)) inline 
 }
 
 
-__attribute__((always_inline)) inline static void store(auto*  __restrict__ ptr, const auto v) {
-  static constexpr auto elems = sizeof(decltype(v)) / sizeof(decltype(v[0]));
-  using T = decltype(v[0]);
-  std::memcpy(ptr, &v, sizeof(T) * elems);
+__attribute__((always_inline)) inline static void store(auto*  __restrict__ ptr, const auto &v) {
+  std::memcpy(ptr, &v, sizeof(decltype(v)));
 }
 
 
@@ -77,7 +75,13 @@ __attribute__((always_inline)) inline constexpr static auto load_and_separate(co
 }
 
 template <typename T> __attribute__((always_inline)) inline constexpr static auto set_vector_to_complex(const std::complex<double> a) {
-  return std::make_pair(T{a.real()}, T{a.imag()});
+  T real{};
+  T imag{};
+  for (size_t i = 0; i < sizeof(T) / sizeof(double); i++) {
+    real[i] = a.real();
+    imag[i] = a.imag();
+  }
+  return std::make_pair(real, imag);
 }
 
 __attribute__((always_inline)) inline constexpr static auto complex_mul(const auto real0, const auto imag0, const auto real1, const auto imag1) {

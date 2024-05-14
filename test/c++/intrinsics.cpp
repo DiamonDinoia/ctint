@@ -141,9 +141,16 @@ TYPED_TEST(IntrinsicsTest, Load) {
 TYPED_TEST(IntrinsicsTest, Store) {
   using T = TypeParam::type;
   static constexpr auto N = TypeParam::size;
-  std::array<T, N> data;
+  std::array<T, N> data{};
   store(data.data(), this->v_a);
   std::string v_str = "\n";
+  v_str += "v_a = " + print_vector(this->v_a) + "\n";
+  v_str += "data = " + print_vector(data) + "\n";
+  SCOPED_TRACE(v_str);
+  for (int i = 0; i < N; ++i) {
+    SCOPED_TRACE("i : " + std::to_string(i));
+    EXPECT_DOUBLE_EQ(this->v_a[i], data[i]);
+  }
 }
 
 TYPED_TEST(IntrinsicsTest, LoadAndSeparate) {
@@ -168,6 +175,19 @@ TYPED_TEST(IntrinsicsTest, ComplexMulAvx512) {
     EXPECT_NEAR((this->ab[i]*this->cd[i]).imag(), imag[i], 2*std::numeric_limits<T>::epsilon());
   }
 }
+
+TYPED_TEST(IntrinsicsTest, SetVectorToValue) {
+  using T = TypeParam::type;
+  static constexpr auto N = TypeParam::size;
+  std::complex<double> value{this->dis(this->gen), this->dis(this->gen)};
+  auto [real, imag] = set_vector_to_complex<Vec<T, N>>(value);
+  for (int i = 0; i < TypeParam::size; ++i) {
+    EXPECT_DOUBLE_EQ(real[i], value.real());
+    EXPECT_DOUBLE_EQ(imag[i], value.imag());
+  }
+}
+
+
 #else
 int main(){
   return 0;
