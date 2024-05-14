@@ -1,5 +1,5 @@
 #include "./M4_iw.hpp"
-#ifdef  USE_INTRINSICS
+#ifdef USE_INTRINSICS
 #include "./intrinsics.h"
 #endif
 
@@ -10,7 +10,7 @@ namespace triqs_ctint::measures {
 
     // Construct Matsubara mesh
     mesh::imfreq iw_mesh{params.beta, Fermion, params.n_iw_M4};
-    mesh::prod<imfreq, imfreq, imfreq> M4_iw_mesh{iw_mesh, iw_mesh, iw_mesh};
+    auto M4_iw_mesh = iw_mesh * iw_mesh * iw_mesh;
 
     // Init measurement container and capture view
     results->M4_iw = make_block2_gf(M4_iw_mesh, params.gf_struct);
@@ -19,7 +19,7 @@ namespace triqs_ctint::measures {
 
     // Construct Matsubara mesh for temporary Matrix
     mesh::imfreq iw_mesh_large{params.beta, Fermion, 3 * params.n_iw_M4};
-    mesh::prod<imfreq, imfreq> M_mesh{iw_mesh_large, iw_mesh};
+    auto M_mesh = iw_mesh_large * iw_mesh;
 
     // Initialize intermediate scattering matrix
     M = block_gf{M_mesh, params.gf_struct};
@@ -44,8 +44,7 @@ namespace triqs_ctint::measures {
       foreach (qmc_config.dets[bl],
                [&](c_t const &c_i, cdag_t const &cdag_j, auto const &Ginv_ji) { // Care for negative frequency in c transform (for M-objects)
                  buf_arrarr(bl)(cdag_j.u, c_i.u).push_back({double(cdag_j.tau), params.beta - double(c_i.tau)}, -Ginv_ji);
-               })
-        ;
+               });
     for (auto &buf_arr : buf_arrarr)
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
@@ -64,7 +63,7 @@ namespace triqs_ctint::measures {
               const auto iw4 = iw1 + iw3 - iw2;
               for (auto i : range(bl1_size)) {
                 for (auto j : range(bl1_size)) {
-                  const auto M1val                = M1[iw2.value(), iw1](j, i) * sign;
+                  const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
 #ifdef USE_INTRINSICS
                   {
                     const auto bl2square            = bl2_size * bl2_size;
