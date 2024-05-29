@@ -7,7 +7,7 @@
 #include <random>
 #include <algorithm>
 
-#ifdef  USE_INTRINSICS
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)
 
 template <typename T, int N>
 struct VecType {
@@ -15,7 +15,14 @@ struct VecType {
   static constexpr int size = N;
 };
 
-using MyTypes = ::testing::Types<VecType<float, 2>, VecType<float, 4>, VecType<float, 8>, VecType<double, 2>, VecType<double, 4>, VecType<double, 8>>;
+#ifdef __AVX512F__
+using MyTypes = ::testing::Types<VecType<float, 2>, VecType<float, 4>, VecType<float, 8>, VecType<float, 16>, VecType<double, 2>, VecType<double, 4>,
+                                 VecType<double, 8>>;
+#elifdef __AVX2__
+using MyTypes = ::testing::Types<VecType<float, 2>, VecType<float, 4>, VecType<float, 8>, VecType<double, 2>, VecType<double, 4>>;
+#elifdef __SSE4_2__
+using MyTypes = ::testing::Types<VecType<float, 2>, VecType<float, 4>, VecType<double, 2>>;
+#endif
 
 template <typename VecType>
 class IntrinsicsTest : public ::testing::Test {
@@ -179,11 +186,13 @@ TYPED_TEST(IntrinsicsTest, ComplexMulAvx512) {
 TYPED_TEST(IntrinsicsTest, SetVectorToValue) {
   using T = TypeParam::type;
   static constexpr auto N = TypeParam::size;
-  std::complex<double> value{this->dis(this->gen), this->dis(this->gen)};
-  auto [real, imag] = set_vector_to_complex<Vec<T, N>>(value);
-  for (int i = 0; i < TypeParam::size; ++i) {
-    EXPECT_DOUBLE_EQ(real[i], value.real());
-    EXPECT_DOUBLE_EQ(imag[i], value.imag());
+  if constexpr (std::is_same_v<T, double>) {
+    std::complex<double> value{this->dis(this->gen), this->dis(this->gen)};
+    auto [real, imag] = set_vector_to_complex<Vec<T, N>>(value);
+    for (int i = 0; i < TypeParam::size; ++i) {
+      EXPECT_DOUBLE_EQ(real[i], value.real());
+      EXPECT_DOUBLE_EQ(imag[i], value.imag());
+    }
   }
 }
 

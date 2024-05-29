@@ -46,6 +46,9 @@ namespace triqs_ctint::measures {
     // Intermediate scattering matrix in the measurement of M4
     using M_layout = nda::contiguous_layout_with_stride_order<nda::encode(std::array{0, 1, 3, 2})>;
     block_gf<prod<imfreq, imfreq>, matrix_valued, M_layout> M;
+
+    private:
+    template <bool vectorize, uint bl1_batch, uint bl2_batch> void accumulate(mc_weight_t sign, int bl1, int bl2);
   };
 
 } // namespace triqs_ctint::measures
