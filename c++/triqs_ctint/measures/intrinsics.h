@@ -2,13 +2,26 @@
 
 #include <iostream>
 
-#ifdef  USE_INTRINSICS
+#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)
 #include <immintrin.h>
 #include <utility>
 #include <complex>
 
 template <class T, std::uint8_t elems> using Vec = T __attribute__((vector_size(elems * sizeof(T))));
 
+template<class T>
+static constexpr uint widest_simd() noexcept {
+  if constexpr (__AVX512F__) {
+    return 512U/sizeof(T);
+  }
+  if constexpr (__AVX2__) {
+    return 256U/sizeof(T);
+  }
+  if constexpr (__SSE4_2__) {
+    return 128U/sizeof(T);
+  }
+  return 1U;
+}
 
 template <std::size_t... I>
 __attribute__((always_inline)) inline static constexpr auto permute_vectors(std::index_sequence<I...>, const auto v1, const auto v2) noexcept {
