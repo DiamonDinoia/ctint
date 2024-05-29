@@ -33,6 +33,78 @@ namespace triqs_ctint::measures {
     }
   }
 
+  template <bool vectorize, uint bl1_batch, uint bl2_batch> void M4_iw::accumulate(mc_weight_t sign, int bl1, int bl2) {
+    auto constexpr simd1_size = std::min(bl1_batch, widest_simd<double>());
+    auto constexpr simd2_size = std::min(bl2_batch, widest_simd<double>());
+    auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
+    auto const bl1_size = M[bl1].target_shape()[0];
+    auto const bl2_size = M[bl2].target_shape()[0];
+    auto const M1       = M[bl1];
+    auto const M2       = M[bl2];
+    auto M4             = M4_iw_(bl1, bl2);
+    for (const auto &iw1 : iw_mesh) {
+      for (const auto &iw2 : iw_mesh) {
+        for (const auto &iw3 : iw_mesh) {
+          const auto iw4 = iw1 + iw3 - iw2;
+          for (auto i : range(bl1_size)) {
+            for (auto j : range(bl1_size)) {
+              const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
+              if constexpr (vectorize && bl1_batch>1) {
+                const auto bl2square            = bl2_size * bl2_size;
+                using Type                      = decltype(M1val.real());
+                const auto remainder            = bl2square & (simd1_size - 1);
+                const auto [M1s_real, M1s_imag] = set_vector_to_complex<Vec<Type, simd1_size>>(M1val);
+                for (auto index = 0; index < bl2square - remainder; index += simd1_size) {
+                  auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
+                  const auto [M4v1, M4v2]                   = load<Type, simd1_size>(m4_ptr);
+                  const auto [real, imag]                   = load_and_separate<Type, simd1_size>(M2[iw4, iw3].data() + index);
+                  const auto [real_res, imag_res]           = complex_mul(M1s_real, M1s_imag, real, imag);
+                  const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
+                  store(m4_ptr + 0, M4v1 + interleave_v1);
+                  store(m4_ptr + simd1_size / 2, M4v2 + interleave_v2);
+                }
+                if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
+                  for (auto index = bl2square - remainder; index < bl2square; index++) {
+                    (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index];
+                  }
+                }
+              } else {
+#pragma clang loop vectorize(enable) unroll_count(2)
+                for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
+              }
+              if (bl1 == bl2) [[unlikely]] {
+                for (const auto k : range(bl2_size)) {
+                  const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
+                  if constexpr (vectorize && bl2_batch>1) {
+                    using Type                      = decltype(M2sval.real());
+                    const auto remainder            = bl2_size & (simd2_size - 1); // mod Elems
+                    const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, simd2_size>>(M2sval);
+                    for (auto index = 0; index < bl2_size - remainder; index += simd2_size) {
+                      const auto [real, imag]                   = load_and_separate<Type, simd2_size>(&M1[iw4, iw1](index, i));
+                      const auto [real_res, imag_res]           = complex_mul(M2s_real, M2s_imag, real, imag);
+                      const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
+                      auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, k, index);
+                      const auto [M4v1, M4v2]                   = load<Type, simd2_size>(m4_ptr);
+                      store(m4_ptr + 0, M4v1 - interleave_v1);
+                      store(m4_ptr + simd2_size / 2, M4v2 - interleave_v2);
+                    }
+                    if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
+                      for (auto index = bl2_size - remainder; index < bl2_size; index++) {
+                        M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i);
+                      }
+                    }
+                  } else {
+                    for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   void M4_iw::accumulate(mc_weight_t sign) {
     // Accumulate sign
     Z += sign;
@@ -48,79 +120,24 @@ namespace triqs_ctint::measures {
     for (auto &buf_arr : buf_arrarr)
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
-    auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
-
     for (const int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
       for (const int bl2 : range(params.n_blocks())) {
         auto const bl1_size = M[bl1].target_shape()[0];
         auto const bl2_size = M[bl2].target_shape()[0];
-        auto const M1       = M[bl1];
-        auto const M2       = M[bl2];
-        auto M4             = M4_iw_(bl1, bl2);
-        for (const auto &iw1 : iw_mesh) {
-          for (const auto &iw2 : iw_mesh) {
-            for (const auto &iw3 : iw_mesh) {
-              const auto iw4 = iw1 + iw3 - iw2;
-              for (auto i : range(bl1_size)) {
-                for (auto j : range(bl1_size)) {
-                  const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
-#ifdef USE_INTRINSICS
-                  {
-                    const auto bl2square            = bl2_size * bl2_size;
-                    static constexpr auto Elems     = 8L;
-                    using Type                      = decltype(M1val.real());
-                    const auto remainder            = bl2square & (Elems - 1);
-                    const auto [M1s_real, M1s_imag] = set_vector_to_complex<Vec<Type, Elems>>(M1val);
-                    for (auto index = 0; index < bl2square - remainder; index += Elems) {
-                      const auto [real, imag]                   = load_and_separate<Type, Elems>(M2[iw4, iw3].data() + index);
-                      const auto [real_res, imag_res]           = complex_mul(M1s_real, M1s_imag, real, imag);
-                      const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
-                      auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
-                      const auto [M4v1, M4v2]                   = load<Type, Elems>(m4_ptr);
-                      store(m4_ptr + 0, M4v1 + interleave_v1);
-                      store(m4_ptr + Elems / 2, M4v2 + interleave_v2);
-                    }
-                    if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
-                      for (auto index = bl2square - remainder; index < bl2square; index++) {
-                        (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index];
-                      }
-                    }
-                  }
-#else
-#pragma clang loop vectorize(enable) unroll_count(2)
-                  for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
-#endif
-                  if (bl1 == bl2) [[unlikely]] {
-                    for (const auto k : range(bl2_size)) {
-                      const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-#ifdef USE_INTRINSICS
-                      static constexpr auto Elems     = 4L;
-                      using Type                      = decltype(M2sval.real());
-                      const auto remainder            = bl2_size & (Elems - 1); // mod Elems
-                      const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, Elems>>(M2sval);
-                      for (auto index = 0; index < bl2_size - remainder; index += Elems) {
-                        const auto [real, imag]                   = load_and_separate<Type, Elems>(&M1[iw4, iw1](index, i));
-                        const auto [real_res, imag_res]           = complex_mul(M2s_real, M2s_imag, real, imag);
-                        const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
-                        auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, k, index);
-                        const auto [M4v1, M4v2]                   = load<Type, Elems>(m4_ptr);
-                        store(m4_ptr + 0, M4v1 - interleave_v1);
-                        store(m4_ptr + Elems / 2, M4v2 - interleave_v2);
-                      }
-                      if (remainder) { // for loop are assumed always taken, this tells the compiler that here is not the case
-                        for (auto index = bl2_size - remainder; index < bl2_size; index++) {
-                          M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i);
-                        }
-                      }
-#else
-                      for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
-#endif
-                    }
-                  }
-                }
-              }
-            }
-          }
+        if (bl1_size >= 3) {
+          if (bl2_size >= 8) { accumulate<true, 8, 8>(sign, bl1, bl2); }
+          else if (bl2_size >= 4) { accumulate<true, 8, 4>(sign, bl1, bl2); }
+          else if (bl2_size >= 2) { accumulate<true, 8, 2>(sign, bl1, bl2); }
+        } else if (bl1_size >= 2) {
+            if (bl2_size >= 8) { accumulate<true, 4, 8>(sign, bl1, bl2); }
+            else if (bl2_size >= 4) { accumulate<true, 4, 4>(sign, bl1, bl2); }
+            else if (bl2_size >= 2) { accumulate<true, 4, 2>(sign, bl1, bl2); }
+        } else if (bl1_size >= 1) {
+          if (bl2_size >= 8) { accumulate<true, 1, 8>(sign, bl1, bl2); }
+          else if (bl2_size >= 4) { accumulate<true, 1, 4>(sign, bl1, bl2); }
+          else if (bl2_size >= 2) { accumulate<true, 1, 2>(sign, bl1, bl2); }
+        } else {
+          accumulate<false, 1, 1>(sign, bl1, bl2);
         }
       }
     }
