@@ -138,7 +138,7 @@ namespace triqs_ctint::measures {
         } else if (bl2_size>= 4) {
           accumulate<8, 2>(sign, bl1, bl2);
         } else if (bl2_size>= 3) {
-          accumulate<4, 1>(sign, bl1, bl2);
+          accumulate<4, 2>(sign, bl1, bl2);
         } else if (bl2_size>= 2) {
           accumulate<2, 1>(sign, bl1, bl2);
         } else {
