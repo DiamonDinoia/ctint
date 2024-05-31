@@ -1,8 +1,18 @@
 #pragma once
 
-#include <iostream>
+#if defined(_MSC_VER)
+// For Microsoft Visual Studio
+#define RESTRICT __restrict
+#elif defined(__GNUC__)
+// For GCC and Clang
+#define RESTRICT __restrict__
+#else
+#define RESTRICT
+#endif
 
 #if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)
+
+#include <iostream>
 #include <immintrin.h>
 #include <utility>
 #include <complex>
