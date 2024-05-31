@@ -1,7 +1,5 @@
 #include "./M4_iw.hpp"
-#ifdef USE_INTRINSICS
 #include "./intrinsics.h"
-#endif
 
 namespace triqs_ctint::measures {
 
@@ -38,7 +36,7 @@ namespace triqs_ctint::measures {
   // bl1_batch and bl2_batch are the batch sizes for the first and second block respectively that determine the width
   // of the SIMD instructions
   // if a wider SIMD than supported is used it will fall back to the smaller version
-  template <uint bl1_batch, uint bl2_batch> void M4_iw::accumulate(mc_weight_t sign, int bl1, int bl2) {
+  template <unsigned bl1_batch, unsigned bl2_batch> void M4_iw::accumulate(mc_weight_t sign, unsigned bl1, unsigned bl2) {
     // if the user requests a SIMD size larger than the supported one, it will fall back to the supported one
     static auto constexpr simd1_size = std::min(bl1_batch, widest_simd<double>());
     static auto constexpr simd2_size = std::min(bl2_batch, widest_simd<double>());
@@ -55,7 +53,9 @@ namespace triqs_ctint::measures {
           for (auto i : range(bl1_size)) {
             for (auto j : range(bl1_size)) {
               const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
-              if constexpr (bl1_batch>1) {
+// USE_INTRINSICS is both a flag and a parameter because the block would not compile if the code is invalid inside the block
+              if constexpr (USE_INTRINSICS && bl1_batch>1) {
+#if USE_INTRINSICS == 1
                 const auto bl2square            = bl2_size * bl2_size;
                 using Type                      = decltype(M1val.real());
                 const auto truncated_size       = bl2square & (-simd1_size);
@@ -73,13 +73,15 @@ namespace triqs_ctint::measures {
                   store(m4_ptr + (simd1_size / 2), M4v2 + interleave_v2);
                 }
                 for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
+#endif
               } else {
                 for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
               }
               if (bl1 == bl2) [[unlikely]] {
                 for (const auto k : range(bl2_size)) {
                   const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-                  if constexpr (bl2_batch>1) {
+                  if constexpr (USE_INTRINSICS==1 && bl2_batch>1) {
+#if USE_INTRINSICS == 1
                     using Type                = decltype(M2sval.real());
                     const auto truncated_size = bl2_size & (-simd2_size);
                     // see above for explanation
@@ -95,7 +97,8 @@ namespace triqs_ctint::measures {
                       store(m4_ptr + (simd2_size / 2), M4v2 - interleave_v2);
                     }
                     for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
-                  } else {
+#endif
+                  }else {
                     for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
                   }
                 }
@@ -128,16 +131,20 @@ namespace triqs_ctint::measures {
         // Dispatch to the correct SIMD instruction width based on the size of the blocks
         // It will try to use the widest SIMD instruction available for the given block sizes
         // TODO: fold expressions might be an option to simplify the code
-        if (bl2_size >= 16) {
-          accumulate<8, 8>(sign, bl1, bl2);
-        } else if (bl2_size>=8) {
-          accumulate<8, 4>(sign, bl1, bl2);
-        } else if (bl2_size>= 4) {
-          accumulate<8, 2>(sign, bl1, bl2);
-        } else if (bl2_size>= 3) {
-          accumulate<4, 1>(sign, bl1, bl2);
-        } else if (bl2_size>= 2) {
-          accumulate<2, 1>(sign, bl1, bl2);
+        if constexpr (USE_INTRINSICS==1) {
+          if (bl2_size >= 16) {
+            accumulate<8, 8>(sign, bl1, bl2);
+          } else if (bl2_size >= 8) {
+            accumulate<8, 4>(sign, bl1, bl2);
+          } else if (bl2_size >= 4) {
+            accumulate<8, 2>(sign, bl1, bl2);
+          } else if (bl2_size >= 3) {
+            accumulate<4, 1>(sign, bl1, bl2);
+          } else if (bl2_size >= 2) {
+            accumulate<2, 1>(sign, bl1, bl2);
+          } else {
+            accumulate<1, 1>(sign, bl1, bl2);
+          }
         } else {
           accumulate<1, 1>(sign, bl1, bl2);
         }

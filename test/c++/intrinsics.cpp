@@ -1,13 +1,12 @@
-#pragma clang fp contract(fast)
-
 #include <triqs_ctint/measures/intrinsics.h>
+
+#if USE_INTRINSICS == 1
+
 #include <gtest/gtest.h>
 #include <complex>
 #include <array>
 #include <random>
 #include <algorithm>
-
-#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)
 
 template <typename T, int N>
 struct VecType {
