@@ -135,8 +135,6 @@ include(GNUInstallDirs)
 
 # #############
 # Build Project
-add_compile_definitions(-DUSE_INTRINSICS)
-add_compile_options(-mavx512f -ffp-contract=fast)
 
 # Find / Build dependencies
 add_subdirectory(deps)

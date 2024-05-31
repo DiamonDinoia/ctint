@@ -10,21 +10,12 @@
 #define RESTRICT
 #endif
 
-#if defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)
-
-#include <iostream>
-#include <immintrin.h>
-#include <utility>
-#include <complex>
-
-template <class T, std::uint8_t elems> using Vec = T __attribute__((vector_size(elems * sizeof(T))));
-
 /**
  * @brief Get the widest simd type for the current architecture
  * Currently only supports AVX512, AVX2 and SSE4.2 architectures
  */
 template<class T>
-static constexpr uint widest_simd() noexcept {
+constexpr unsigned widest_simd() noexcept {
   if constexpr (__AVX512F__) {
     return 512U/sizeof(T);
   }
@@ -36,6 +27,16 @@ static constexpr uint widest_simd() noexcept {
   }
   return 1U;
 }
+
+#if (defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)) && defined(__clang__)
+#define USE_INTRINSICS 1
+
+#include <iostream>
+#include <immintrin.h>
+#include <utility>
+#include <complex>
+
+template <class T, std::uint8_t elems> using Vec = T __attribute__((vector_size(elems * sizeof(T))));
 
 /**
  *  This selects the indices I ... from v1 and v2
@@ -161,5 +162,6 @@ __attribute__((always_inline)) inline constexpr static auto complex_mul(const au
 #endif
    return std::make_pair(real, imag);
 }
-
+#else
+#define USE_INTRINSICS 0
 #endif
