@@ -48,7 +48,7 @@ namespace triqs_ctint::measures {
     block_gf<prod<imfreq, imfreq>, matrix_valued, M_layout> M;
 
     private:
-    template <bool vectorize, uint bl1_batch, uint bl2_batch> void accumulate(mc_weight_t sign, int bl1, int bl2);
+    template <uint bl1_batch, uint bl2_batch> void accumulate(mc_weight_t sign, int bl1, int bl2);
   };
 
 } // namespace triqs_ctint::measures

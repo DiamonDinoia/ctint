@@ -33,7 +33,12 @@ namespace triqs_ctint::measures {
     }
   }
 
-  template <bool vectorize, uint bl1_batch, uint bl2_batch> void M4_iw::accumulate(mc_weight_t sign, int bl1, int bl2) {
+  // function to accumulate the intermediate scattering matrix
+  // it uses the SIMD intrinsics to vectorize the loops
+  // bl1_batch and bl2_batch are the batch sizes for the first and second block respectively that determine the width
+  // of the SIMD instructions
+  // if a wider SIMD than supported is used it will fall back to the smaller version
+  template <uint bl1_batch, uint bl2_batch> void M4_iw::accumulate(mc_weight_t sign, int bl1, int bl2) {
     auto constexpr simd1_size = std::min(bl1_batch, widest_simd<double>());
     auto constexpr simd2_size = std::min(bl2_batch, widest_simd<double>());
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
@@ -49,10 +54,10 @@ namespace triqs_ctint::measures {
           for (auto i : range(bl1_size)) {
             for (auto j : range(bl1_size)) {
               const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
-              if constexpr (vectorize && bl1_batch>1) {
+              if constexpr (bl1_batch>1) {
                 const auto bl2square            = bl2_size * bl2_size;
                 using Type                      = decltype(M1val.real());
-                const auto remainder            = bl2square & (simd1_size - 1);
+                const auto remainder            = bl2square & (simd1_size - 1); // module simd1_size since it is a power of 2
                 const auto [M1s_real, M1s_imag] = set_vector_to_complex<Vec<Type, simd1_size>>(M1val);
                 for (auto index = 0; index < bl2square - remainder; index += simd1_size) {
                   auto *const __restrict__ m4_ptr           = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
@@ -75,7 +80,7 @@ namespace triqs_ctint::measures {
               if (bl1 == bl2) [[unlikely]] {
                 for (const auto k : range(bl2_size)) {
                   const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-                  if constexpr (vectorize && bl2_batch>1) {
+                  if constexpr (bl2_batch>1) {
                     using Type                      = decltype(M2sval.real());
                     const auto remainder            = bl2_size & (simd2_size - 1); // mod Elems
                     const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, simd2_size>>(M2sval);
@@ -122,22 +127,22 @@ namespace triqs_ctint::measures {
 
     for (const int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
       for (const int bl2 : range(params.n_blocks())) {
-        auto const bl1_size = M[bl1].target_shape()[0];
         auto const bl2_size = M[bl2].target_shape()[0];
-        if (bl1_size >= 3) {
-          if (bl2_size >= 8) { accumulate<true, 8, 8>(sign, bl1, bl2); }
-          else if (bl2_size >= 4) { accumulate<true, 8, 4>(sign, bl1, bl2); }
-          else if (bl2_size >= 2) { accumulate<true, 8, 2>(sign, bl1, bl2); }
-        } else if (bl1_size >= 2) {
-            if (bl2_size >= 8) { accumulate<true, 4, 8>(sign, bl1, bl2); }
-            else if (bl2_size >= 4) { accumulate<true, 4, 4>(sign, bl1, bl2); }
-            else if (bl2_size >= 2) { accumulate<true, 4, 2>(sign, bl1, bl2); }
-        } else if (bl1_size >= 1) {
-          if (bl2_size >= 8) { accumulate<true, 1, 8>(sign, bl1, bl2); }
-          else if (bl2_size >= 4) { accumulate<true, 1, 4>(sign, bl1, bl2); }
-          else if (bl2_size >= 2) { accumulate<true, 1, 2>(sign, bl1, bl2); }
+        // Dispatch to the correct SIMD instruction width based on the size of the blocks
+        // It will try to use the widest SIMD instruction available for the given block sizes
+        // TODO: fold expressions might be an option to simplify the code
+        if (bl2_size >= 16) {
+          accumulate<8, 8>(sign, bl1, bl2);
+        } else if (bl2_size>=8) {
+          accumulate<8, 4>(sign, bl1, bl2);
+        } else if (bl2_size>= 4) {
+          accumulate<8, 2>(sign, bl1, bl2);
+        } else if (bl2_size>= 3) {
+          accumulate<4, 1>(sign, bl1, bl2);
+        } else if (bl2_size>= 2) {
+          accumulate<2, 1>(sign, bl1, bl2);
         } else {
-          accumulate<false, 1, 1>(sign, bl1, bl2);
+          accumulate<1, 1>(sign, bl1, bl2);
         }
       }
     }
