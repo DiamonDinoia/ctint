@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <cstring>
 #if defined(_MSC_VER)
 // For Microsoft Visual Studio
 #define RESTRICT __restrict
@@ -16,16 +18,15 @@
  */
 template<class T>
 constexpr unsigned widest_simd() noexcept {
-  if constexpr (__AVX512F__) {
+#ifdef __AVX512F__
     return 512U/sizeof(T);
-  }
-  if constexpr (__AVX2__) {
+#elifdef __AVX2__
     return 256U/sizeof(T);
-  }
-  if constexpr (__SSE4_2__) {
+#elifdef __SSE4_2__
     return 128U/sizeof(T);
-  }
+#else
   return 1U;
+#endif
 }
 
 #if (defined(__AVX512F__) || defined(__AVX2__) || defined(__SSE4_2__)) && defined(__clang__)
