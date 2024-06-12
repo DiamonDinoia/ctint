@@ -157,7 +157,7 @@ namespace triqs::utility {
     nda::array<dcomplex, Rank> fk_arr;
 
     // Tolerance for the transformation
-    double tol = 1e-13;
+    double tol = 1e-14;
 
     // Function to check whether buffer is filled
     bool is_full() const { return buf_counter >= buf_size; }
