@@ -48,27 +48,28 @@ namespace triqs::utility {
     nfft_buf_t(nfft_buf_t &&)      = default;
     nfft_buf_t &operator=(nfft_buf_t const &rhs) {
       fiw_arr.rebind(rhs.fiw_arr);
-      x_arr  = rhs.x_arr;
-      fx_arr = rhs.fx_arr;
-      fk_arr = rhs.fk_arr;
-
+      niws          = rhs.niws;
       buf_size      = rhs.buf_size;
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
       common_factor = rhs.common_factor;
-      opts = rhs.opts;
+      opts          = rhs.opts;
+      x_arr         = rhs.x_arr;
+      fx_arr        = rhs.fx_arr;
+      fk_arr        = rhs.fk_arr;
       return *this;
     }
-    nfft_buf_t &operator=(nfft_buf_t &&rhs)  noexcept {
+    nfft_buf_t &operator=(nfft_buf_t &&rhs) noexcept {
       fiw_arr.rebind(rhs.fiw_arr);
-      x_arr  = std::move(rhs.x_arr);
-      fx_arr = std::move(rhs.fx_arr);
-      fk_arr = std::move(rhs.fk_arr);
-      opts = std::move(rhs.opts);
+      niws          = rhs.niws;
       buf_size      = rhs.buf_size;
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
       common_factor = rhs.common_factor;
+      opts          = std::move(rhs.opts);
+      x_arr         = std::move(rhs.x_arr);
+      fx_arr        = std::move(rhs.fx_arr);
+      fk_arr        = std::move(rhs.fk_arr);
       return *this;
     }
 
@@ -90,12 +91,12 @@ namespace triqs::utility {
       double tau_sum = 0.0;
       for (int r = 0; r < Rank; ++r) {
         // Note: Nfft multi-arrays are stored in flattened arrays (c-order)
-        x_arr(r, buf_counter) = 2 * M_PI * (tau_arr[r] / beta - 0.5); // \in [-PI, PI) NOLINT
+        x_arr(r, buf_counter) = 2 * M_PI * (tau_arr[r] / beta - 0.5); // \in [-PI, PI)
         tau_sum += tau_arr[r];                                        // Sum all tau values
       }
 
       // Write f(x), The prefactor accounts for the Pi/beta offset in fermionic Matsubaras
-      fx_arr[buf_counter] = std::exp(dcomplex(0, M_PI * tau_sum / beta)) * ftau; // NOLINT
+      fx_arr[buf_counter] = std::exp(dcomplex(0, M_PI * tau_sum / beta)) * ftau;
 
       ++buf_counter;
 
@@ -117,8 +118,8 @@ namespace triqs::utility {
 
       // Trivial initialization of the remaining points
       for (int i = buf_counter; i < buf_size; ++i) {
-        fx_arr[i] = 0.0;                                                                       // NOLINT
-        for (int r = 0; r < Rank; ++r) x_arr(r, i) = 2 * M_PI * (-0.5 + double(i) / buf_size); // NOLINT
+        fx_arr[i] = 0.0;
+        for (int r = 0; r < Rank; ++r) x_arr(r, i) = 2 * M_PI * (-0.5 + double(i) / buf_size);
       }
       do_nfft();
       buf_counter = 0;
