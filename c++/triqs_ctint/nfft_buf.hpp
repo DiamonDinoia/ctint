@@ -6,6 +6,9 @@
 
 #include "finufft.h"
 
+#define CHECK_ERROR(err)                                                                                                                             \
+  if (err > 0) NDA_RUNTIME_ERROR << "Error in FINUFFT: " << err << "\n"
+
 namespace triqs::utility {
 
   using nda::array_view;
@@ -36,32 +39,27 @@ namespace triqs::utility {
         common_factor *= (n / 2) % 2 ? -1 : 1; // Additional Minus sign for uneven Matsubara offset
       }
 
-      finufft_default_opts(&opts); // set default opts (must start with this)
-      opts.nthreads = 1;           // enforce single-thread
+      // Init nfft_plan
+      finufft_default_opts(&opts);                             // set default opts (must start with this)
+      opts.nthreads = 1;                                       // enforce single-thread
+      //opts.debug    = 1;                                       // print diagnostics or 2 prints some information about what finufft is doing
+      auto Ns       = std::vector(niws.rbegin(), niws.rend()); // Reverse order for FINUFFT
+      CHECK_ERROR(finufft_makeplan(/*type =*/1, Rank, Ns.data(), /*iflag=*/1, /*ntrans =*/1, tol, &plan, &opts));
     }
 
     ~nfft_buf_t() {
       if (buf_counter != 0) std::cout << " WARNING: Points in NFFT Buffer lost \n";
+      finufft_destroy(plan);
     }
 
-    nfft_buf_t(nfft_buf_t const &) = default;
-    nfft_buf_t(nfft_buf_t &&)      = default;
-    nfft_buf_t &operator=(nfft_buf_t const &rhs) {
-      fiw_arr.rebind(rhs.fiw_arr);
-      niws          = rhs.niws;
-      buf_size      = rhs.buf_size;
-      beta          = rhs.beta;
-      buf_counter   = rhs.buf_counter;
-      common_factor = rhs.common_factor;
-      opts          = rhs.opts;
-      x_arr         = rhs.x_arr;
-      fx_arr        = rhs.fx_arr;
-      fk_arr        = rhs.fk_arr;
-      return *this;
-    }
+    // nfft_buffer needs to be uncopyable, because nfft_plan contains raw pointers
+    nfft_buf_t(nfft_buf_t const &)            = delete;
+    nfft_buf_t(nfft_buf_t &&)                 = default;
+    nfft_buf_t &operator=(nfft_buf_t const &) = delete;
     nfft_buf_t &operator=(nfft_buf_t &&rhs) noexcept {
       fiw_arr.rebind(rhs.fiw_arr);
       niws          = rhs.niws;
+      plan          = std::move(rhs.plan);
       buf_size      = rhs.buf_size;
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
@@ -130,7 +128,10 @@ namespace triqs::utility {
     nda::array_view<dcomplex, Rank> fiw_arr;
 
     // Dimensions of the output array
-    std::array<long, Rank> niws;
+    std::array<int64_t, Rank> niws;
+
+    // Finufft plan
+    finufft_plan plan;
 
     // Number of tau points for the nfft
     int buf_size;
@@ -171,18 +172,15 @@ namespace triqs::utility {
       static_assert(Rank < 4, "NFFT Implemented only for Ranks 1, 2 and 3");
 
       // Execute transform
-      auto _  = nda::range::all;
-      int err = [&]() {
-        if constexpr (Rank == 1) { return finufft1d1(buf_size, x_arr(0, _).data(), fx_arr.data(), +1, tol, niws[0], fk_arr.data(), &opts); }
-        if constexpr (Rank == 2) {
-          return finufft2d1(buf_size, x_arr(1, _).data(), x_arr(0, _).data(), fx_arr.data(), +1, tol, niws[1], niws[0], fk_arr.data(), &opts);
-        } else { // Rank == 3
-          return finufft3d1(buf_size, x_arr(2, _).data(), x_arr(1, _).data(), x_arr(0, _).data(), fx_arr.data(), +1, tol, niws[2], niws[1], niws[0],
-                            fk_arr.data(), &opts);
-        }
-      }();
-
-      if (err > 0) NDA_RUNTIME_ERROR << "Error in FINUFFT: " << err << "\n";
+      auto _ = nda::range::all;
+      if constexpr (Rank == 1) {
+        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(0, _).data(), nullptr, nullptr, 0, nullptr, nullptr, nullptr));
+      } else if constexpr (Rank == 2) {
+        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(1, _).data(), x_arr(0, _).data(), nullptr, 0, nullptr, nullptr, nullptr));
+      } else { // Rank == 3
+        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(2, _).data(), x_arr(1, _).data(), x_arr(0, _).data(), 0, nullptr, nullptr, nullptr));
+      }
+      CHECK_ERROR(finufft_execute(plan, fx_arr.data(), fk_arr.data()));
 
       // Accumulate results in fiw_arr. Care to normalize results afterwards
       for (auto idx_tpl : fiw_arr.indices()) {
