@@ -61,7 +61,7 @@ endif()
 # -- finufft --
 external_dependency(finufft
   GIT_REPO https://github.com/flatironinstitute/finufft
-  GIT_TAG v2.2.0
+  GIT_TAG master
   BUILD_ALWAYS
   EXCLUDE_FROM_ALL
 )
