@@ -84,3 +84,11 @@ if(Build_Benchs)
     EXCLUDE_FROM_ALL
   )
 endif()
+
+# -- xsimd --
+external_dependency(xsimd
+  GIT_REPO https://github.com/xtensor-stack/xsimd
+  GIT_TAG 13.0.0
+  BUILD_ALWAYS
+  EXCLUDE_FROM_ALL
+)
