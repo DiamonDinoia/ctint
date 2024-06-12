@@ -56,14 +56,15 @@ namespace triqs::utility {
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
       common_factor = rhs.common_factor;
+      opts = rhs.opts;
       return *this;
     }
-    nfft_buf_t &operator=(nfft_buf_t &&rhs) {
+    nfft_buf_t &operator=(nfft_buf_t &&rhs)  noexcept {
       fiw_arr.rebind(rhs.fiw_arr);
       x_arr  = std::move(rhs.x_arr);
       fx_arr = std::move(rhs.fx_arr);
       fk_arr = std::move(rhs.fk_arr);
-
+      opts = std::move(rhs.opts);
       buf_size      = rhs.buf_size;
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
@@ -143,7 +144,7 @@ namespace triqs::utility {
     int common_factor = 1;
 
     // FINUFFT options struct
-    finufft_opts opts;
+    finufft_opts opts{};
 
     // Array containing x values for the NFFT transform
     nda::array<double, 2> x_arr;
