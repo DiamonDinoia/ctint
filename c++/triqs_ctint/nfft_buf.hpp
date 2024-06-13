@@ -49,7 +49,7 @@ namespace triqs::utility {
 
     ~nfft_buf_t() {
       if (buf_counter != 0) std::cout << " WARNING: Points in NFFT Buffer lost \n";
-      finufft_destroy(plan);
+      if (plan) finufft_destroy(plan);
     }
 
     // nfft_buffer needs to be uncopyable, because nfft_plan contains raw pointers
@@ -59,7 +59,7 @@ namespace triqs::utility {
     nfft_buf_t &operator=(nfft_buf_t &&rhs) noexcept {
       fiw_arr.rebind(rhs.fiw_arr);
       niws          = rhs.niws;
-      plan          = std::move(rhs.plan);
+      std::swap(plan, rhs.plan);
       buf_size      = rhs.buf_size;
       beta          = rhs.beta;
       buf_counter   = rhs.buf_counter;
@@ -131,7 +131,7 @@ namespace triqs::utility {
     std::array<int64_t, Rank> niws;
 
     // Finufft plan
-    finufft_plan plan;
+    finufft_plan plan{nullptr};
 
     // Number of tau points for the nfft
     int buf_size;
