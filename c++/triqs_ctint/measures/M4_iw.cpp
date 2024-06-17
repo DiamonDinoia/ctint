@@ -65,32 +65,37 @@ namespace triqs_ctint::measures {
               const auto iw4 = iw1 + iw3 - iw2;
               for (int i : range(bl1_size)) {
                 for (auto j : range(bl1_size)) {
-                  uint64_t index;
+                  uint64_t index = 0;
                   {
                     const auto M1val          = M1[iw2.value(), iw1](j, i) * sign;
                     const auto bl2square      = bl2_size * bl2_size;
                     const auto M1_v           = batch_t(M1val);
                     const auto truncated_size = bl2square & (-batch_t::size);
-                    for (index = 0; index < truncated_size; index += batch_t::size) {
-                      auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
-                      const auto batch            = batch_t::load_unaligned(m4_ptr);
-                      const auto M2_batch         = batch_t::load_unaligned(M2[iw4, iw3].data() + index);
-                      const auto result           = xsimd::fma(M1_v, M2_batch, batch);
-                      result.store_unaligned(m4_ptr);
+                    if (bl2square > batch_t::size) {
+                      for (; index < truncated_size; index += batch_t::size) {
+                        auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
+                        const auto batch            = batch_t::load_unaligned(m4_ptr);
+                        const auto M2_batch         = batch_t::load_unaligned(M2[iw4, iw3].data() + index);
+                        const auto result           = xsimd::fma(M1_v, M2_batch, batch);
+                        result.store_unaligned(m4_ptr);
+                      }
                     }
                     for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
                   }
                   if (bl1 == bl2) [[unlikely]] {
                     for (const auto k : range(bl2_size)) {
+                      index                     = 0;
                       const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
                       const auto M2s_v          = batch_t(M2sval);
                       const auto truncated_size = bl2_size & (-batch_t::size);
-                      for (index=0; index < truncated_size; index += batch_t::size) {
-                        auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
-                        const auto batch            = batch_t::load_unaligned(m4_ptr);
-                        const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
-                        const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
-                        result.store_unaligned(m4_ptr);
+                      if (bl2_size > batch_t::size) {
+                        for (; index < truncated_size; index += batch_t::size) {
+                          auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
+                          const auto batch            = batch_t::load_unaligned(m4_ptr);
+                          const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
+                          const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
+                          result.store_unaligned(m4_ptr);
+                        }
                       }
                       for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
                     }
