@@ -5,6 +5,8 @@
 
 namespace triqs_ctint::measures {
 
+  using batch_t = xsimd::batch<std::complex<double>>;
+
   M4_iw::M4_iw(params_t const &params_, qmc_config_t const &qmc_config_, container_set *results)
      : params(params_), qmc_config(qmc_config_), buf_arrarr(params_.n_blocks()) {
 
