@@ -1,3 +1,5 @@
+#include <xsimd/xsimd.hpp>
+
 #include "./M4_iw.hpp"
 #include "./intrinsics.h"
 
@@ -36,10 +38,8 @@ namespace triqs_ctint::measures {
   // bl1_batch and bl2_batch are the batch sizes for the first and second block respectively that determine the width
   // of the SIMD instructions
   // if a wider SIMD than supported is used it will fall back to the smaller version
-  template <unsigned bl1_batch, unsigned bl2_batch> void M4_iw::accumulate(mc_weight_t sign, unsigned bl1, unsigned bl2) {
+  void M4_iw::accumulate(mc_weight_t sign, unsigned bl1, unsigned bl2) {
     // if the user requests a SIMD size larger than the supported one, it will fall back to the supported one
-    static auto constexpr simd1_size = std::min(bl1_batch, widest_simd<double>());
-    static auto constexpr simd2_size = std::min(bl2_batch, widest_simd<double>());
     auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
     auto const bl1_size = M[bl1].target_shape()[0];
     auto const bl2_size = M[bl2].target_shape()[0];
@@ -52,55 +52,34 @@ namespace triqs_ctint::measures {
           const auto iw4 = iw1 + iw3 - iw2;
           for (auto i : range(bl1_size)) {
             for (auto j : range(bl1_size)) {
-              const auto M1val = M1[iw2.value(), iw1](j, i) * sign;
-// USE_INTRINSICS is both a flag and a parameter because the block would not compile if the code is invalid inside the block
-              if constexpr (USE_INTRINSICS && bl1_batch>1) {
-#if USE_INTRINSICS == 1
-                const auto bl2square            = bl2_size * bl2_size;
-                using Type                      = decltype(M1val.real());
-                const auto truncated_size       = bl2square & (-simd1_size);
-                // AND-ing with -simd1_size will truncate the size to the nearest multiple of the SIMD instruction
-                // this works only if the size of the simd1_size instruction is a power of 2
-                const auto [M1s_real, M1s_imag] = set_vector_to_complex<Vec<Type, simd1_size>>(M1val);
-                uint64_t index                  = 0;
-                for (; index < truncated_size; index += simd1_size) {
-                  auto *const RESTRICT m4_ptr               = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
-                  const auto [M4v1, M4v2]                   = load<Type, simd1_size>(m4_ptr);
-                  const auto [real, imag]                   = load_and_separate<Type, simd1_size>(M2[iw4, iw3].data() + index);
-                  const auto [real_res, imag_res]           = complex_mul(M1s_real, M1s_imag, real, imag);
-                  const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
-                  store(m4_ptr, M4v1 + interleave_v1);
-                  store(m4_ptr + (simd1_size / 2), M4v2 + interleave_v2);
+              uint64_t index;
+              {
+                const auto M1val          = M1[iw2.value(), iw1](j, i) * sign;
+                const auto bl2square      = bl2_size * bl2_size;
+                const auto M1_v           = batch_t(M1val);
+                const auto truncated_size = bl2square & (-batch_t::size);
+                for (index = 0; index < truncated_size; index += batch_t::size) {
+                  auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
+                  const auto batch            = batch_t::load_unaligned(m4_ptr);
+                  const auto M2_batch         = batch_t::load_unaligned(M2[iw4, iw3].data() + index);
+                  const auto result           = xsimd::fma(M1_v, M2_batch, batch);
+                  result.store_unaligned(m4_ptr);
                 }
-                for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
-#endif
-              } else {
-                for (auto index : range(bl2_size * bl2_size)) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
+              for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
               }
               if (bl1 == bl2) [[unlikely]] {
                 for (const auto k : range(bl2_size)) {
                   const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-                  if constexpr (USE_INTRINSICS==1 && bl2_batch>1) {
-#if USE_INTRINSICS == 1
-                    using Type                = decltype(M2sval.real());
-                    const auto truncated_size = bl2_size & (-simd2_size);
-                    // see above for explanation
-                    const auto [M2s_real, M2s_imag] = set_vector_to_complex<Vec<Type, simd2_size>>(M2sval);
-                    uint64_t index                  = 0;
-                    for (; index < truncated_size; index += simd2_size) {
-                      const auto [real, imag]                   = load_and_separate<Type, simd2_size>(&M1[iw4, iw1](index, i));
-                      const auto [real_res, imag_res]           = complex_mul(M2s_real, M2s_imag, real, imag);
-                      const auto [interleave_v1, interleave_v2] = interleave_vectors(real_res, imag_res);
-                      auto *const RESTRICT m4_ptr               = &M4[iw1, iw2, iw3](i, j, k, index);
-                      const auto [M4v1, M4v2]                   = load<Type, simd2_size>(m4_ptr);
-                      store(m4_ptr, M4v1 - interleave_v1);
-                      store(m4_ptr + (simd2_size / 2), M4v2 - interleave_v2);
-                    }
-                    for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
-#endif
-                  }else {
-                    for (const auto l : range(bl2_size)) { M4[iw1, iw2, iw3](i, j, k, l) -= M2sval * M1[iw4, iw1](l, i); }
+                  const auto M2s_v          = batch_t(M2sval);
+                  const auto truncated_size = bl2_size & (-batch_t::size);
+                  for (index=0; index < truncated_size; index += batch_t::size) {
+                    auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
+                    const auto batch            = batch_t::load_unaligned(m4_ptr);
+                    const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
+                    const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
+                    result.store_unaligned(m4_ptr);
                   }
+                  for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
                 }
               }
             }
@@ -127,27 +106,10 @@ namespace triqs_ctint::measures {
 
     for (const int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
       for (const int bl2 : range(params.n_blocks())) {
-        auto const bl2_size = M[bl2].target_shape()[0];
         // Dispatch to the correct SIMD instruction width based on the size of the blocks
         // It will try to use the widest SIMD instruction available for the given block sizes
         // TODO: fold expressions might be an option to simplify the code
-        if constexpr (USE_INTRINSICS==1) {
-          if (bl2_size >= 16) {
-            accumulate<8, 8>(sign, bl1, bl2);
-          } else if (bl2_size >= 8) {
-            accumulate<8, 4>(sign, bl1, bl2);
-          } else if (bl2_size >= 4) {
-            accumulate<8, 2>(sign, bl1, bl2);
-          } else if (bl2_size >= 3) {
-            accumulate<4, 1>(sign, bl1, bl2);
-          } else if (bl2_size >= 2) {
-            accumulate<2, 1>(sign, bl1, bl2);
-          } else {
-            accumulate<1, 1>(sign, bl1, bl2);
-          }
-        } else {
-          accumulate<1, 1>(sign, bl1, bl2);
-        }
+        accumulate(sign, bl1, bl2);
       }
     }
   }
