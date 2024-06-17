@@ -35,62 +35,6 @@ namespace triqs_ctint::measures {
     }
   }
 
-  // function to accumulate the intermediate scattering matrix
-  // it uses the SIMD intrinsics to vectorize the loops
-  // bl1_batch and bl2_batch are the batch sizes for the first and second block respectively that determine the width
-  // of the SIMD instructions
-  // if a wider SIMD than supported is used it will fall back to the smaller version
-  void M4_iw::accumulate(mc_weight_t sign, unsigned bl1, unsigned bl2) {
-    // if the user requests a SIMD size larger than the supported one, it will fall back to the supported one
-    auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
-    auto const bl1_size = M[bl1].target_shape()[0];
-    auto const bl2_size = M[bl2].target_shape()[0];
-    auto const M1       = M[bl1];
-    auto const M2       = M[bl2];
-    auto M4             = M4_iw_(bl1, bl2);
-    for (const auto &iw1 : iw_mesh) {
-      for (const auto &iw2 : iw_mesh) {
-        for (const auto &iw3 : iw_mesh) {
-          const auto iw4 = iw1 + iw3 - iw2;
-          for (auto i : range(bl1_size)) {
-            for (auto j : range(bl1_size)) {
-              uint64_t index;
-              {
-                const auto M1val          = M1[iw2.value(), iw1](j, i) * sign;
-                const auto bl2square      = bl2_size * bl2_size;
-                const auto M1_v           = batch_t(M1val);
-                const auto truncated_size = bl2square & (-batch_t::size);
-                for (index = 0; index < truncated_size; index += batch_t::size) {
-                  auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
-                  const auto batch            = batch_t::load_unaligned(m4_ptr);
-                  const auto M2_batch         = batch_t::load_unaligned(M2[iw4, iw3].data() + index);
-                  const auto result           = xsimd::fma(M1_v, M2_batch, batch);
-                  result.store_unaligned(m4_ptr);
-                }
-              for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
-              }
-              if (bl1 == bl2) [[unlikely]] {
-                for (const auto k : range(bl2_size)) {
-                  const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
-                  const auto M2s_v          = batch_t(M2sval);
-                  const auto truncated_size = bl2_size & (-batch_t::size);
-                  for (index=0; index < truncated_size; index += batch_t::size) {
-                    auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
-                    const auto batch            = batch_t::load_unaligned(m4_ptr);
-                    const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
-                    const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
-                    result.store_unaligned(m4_ptr);
-                  }
-                  for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
   void M4_iw::accumulate(mc_weight_t sign) {
     // Accumulate sign
     Z += sign;
@@ -106,12 +50,56 @@ namespace triqs_ctint::measures {
     for (auto &buf_arr : buf_arrarr)
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
-    for (const int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
-      for (const int bl2 : range(params.n_blocks())) {
-        // Dispatch to the correct SIMD instruction width based on the size of the blocks
-        // It will try to use the widest SIMD instruction available for the given block sizes
-        // TODO: fold expressions might be an option to simplify the code
-        accumulate(sign, bl1, bl2);
+    for (int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
+      for (int bl2 : range(params.n_blocks())) {
+        auto const &iw_mesh = std::get<0>(M4_iw_(0, 0).mesh());
+        auto const bl1_size = M[bl1].target_shape()[0];
+        auto const bl2_size = M[bl2].target_shape()[0];
+        auto const M1       = M[bl1];
+        auto const M2       = M[bl2];
+        auto M4             = M4_iw_(bl1, bl2);
+
+        for (auto iw1 : iw_mesh) {
+          for (auto iw2 : iw_mesh) {
+            for (auto iw3 : iw_mesh) {
+              const auto iw4 = iw1 + iw3 - iw2;
+              for (int i : range(bl1_size)) {
+                for (auto j : range(bl1_size)) {
+                  uint64_t index;
+                  {
+                    const auto M1val          = M1[iw2.value(), iw1](j, i) * sign;
+                    const auto bl2square      = bl2_size * bl2_size;
+                    const auto M1_v           = batch_t(M1val);
+                    const auto truncated_size = bl2square & (-batch_t::size);
+                    for (index = 0; index < truncated_size; index += batch_t::size) {
+                      auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
+                      const auto batch            = batch_t::load_unaligned(m4_ptr);
+                      const auto M2_batch         = batch_t::load_unaligned(M2[iw4, iw3].data() + index);
+                      const auto result           = xsimd::fma(M1_v, M2_batch, batch);
+                      result.store_unaligned(m4_ptr);
+                    }
+                    for (; index < bl2square; index++) { (&M4[iw1, iw2, iw3](i, j, 0, 0))[index] += M1val * M2[iw4, iw3].data()[index]; }
+                  }
+                  if (bl1 == bl2) [[unlikely]] {
+                    for (const auto k : range(bl2_size)) {
+                      const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
+                      const auto M2s_v          = batch_t(M2sval);
+                      const auto truncated_size = bl2_size & (-batch_t::size);
+                      for (index=0; index < truncated_size; index += batch_t::size) {
+                        auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
+                        const auto batch            = batch_t::load_unaligned(m4_ptr);
+                        const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
+                        const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
+                        result.store_unaligned(m4_ptr);
+                      }
+                      for (; index < bl2_size; index++) { M4[iw1, iw2, iw3](i, j, k, index) -= M2sval * M1[iw4, iw1](index, i); }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
