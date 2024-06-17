@@ -71,7 +71,7 @@ namespace triqs_ctint::measures {
                     const auto bl2square      = bl2_size * bl2_size;
                     const auto M1_v           = batch_t(M1val);
                     const auto truncated_size = bl2square & (-batch_t::size);
-                    if (bl2square > batch_t::size) {
+                    if (bl2square >= batch_t::size) {
                       for (; index < truncated_size; index += batch_t::size) {
                         auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, 0, 0) + index;
                         const auto batch            = batch_t::load_unaligned(m4_ptr);
@@ -88,7 +88,7 @@ namespace triqs_ctint::measures {
                       const auto M2sval = M2[iw2.value(), iw3](j, k) * sign;
                       const auto M2s_v          = batch_t(M2sval);
                       const auto truncated_size = bl2_size & (-batch_t::size);
-                      if (bl2_size > batch_t::size) {
+                      if (bl2_size >= batch_t::size) {
                         for (; index < truncated_size; index += batch_t::size) {
                           auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
                           const auto batch            = batch_t::load_unaligned(m4_ptr);
