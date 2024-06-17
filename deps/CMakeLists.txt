@@ -1,5 +1,5 @@
 include(external_dependency.cmake)
-
+include(DownloadCPM.cmake)
 # Add your dependencies with the function
 #
 #   external_dependency(name
@@ -85,10 +85,12 @@ if(Build_Benchs)
   )
 endif()
 
-# -- xsimd --
-external_dependency(xsimd
-  GIT_REPO https://github.com/xtensor-stack/xsimd
-  GIT_TAG 13.0.0
-  BUILD_ALWAYS
-  EXCLUDE_FROM_ALL
+# xtl
+CPMAddPackage("gh:xtensor-stack/xtl#0.7.7")
+# xsimd
+CPMAddPackage(
+        NAME xsimd
+        GITHUB_REPOSITORY xtensor-stack/xsimd
+        GIT_TAG 13.0.0
+        OPTIONS "ENABLE_XTL_COMPLEX ON"
 )
