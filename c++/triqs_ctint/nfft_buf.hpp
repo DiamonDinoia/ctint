@@ -114,7 +114,7 @@ namespace triqs::utility {
       // Don't do anything if buffer is empty
       if (is_empty()) return;
 
-      // Trivial initialization of the remaining points
+      // Execute the transform
       do_nfft();
       buf_counter = 0;
     }
