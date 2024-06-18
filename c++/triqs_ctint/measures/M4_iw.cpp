@@ -93,7 +93,8 @@ namespace triqs_ctint::measures {
                           auto *const RESTRICT m4_ptr = &M4[iw1, iw2, iw3](i, j, k, index);
                           const auto batch            = batch_t::load_unaligned(m4_ptr);
                           const auto M1_batch         = batch_t::load_unaligned(&M1[iw4, iw1](index, i));
-                          const auto result           = xsimd::fms(M2s_v, M1_batch, batch);
+                          // fnma(x, y, z) -> -(x*y) + z
+                          const auto result           = xsimd::fnma(M2s_v, M1_batch, batch);
                           result.store_unaligned(m4_ptr);
                         }
                       }
