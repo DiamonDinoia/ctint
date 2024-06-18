@@ -115,10 +115,6 @@ namespace triqs::utility {
       if (is_empty()) return;
 
       // Trivial initialization of the remaining points
-      for (int i = buf_counter; i < buf_size; ++i) {
-        fx_arr[i] = 0.0;
-        for (int r = 0; r < Rank; ++r) x_arr(r, i) = 2 * M_PI * (-0.5 + double(i) / buf_size);
-      }
       do_nfft();
       buf_counter = 0;
     }
@@ -174,11 +170,11 @@ namespace triqs::utility {
       // Execute transform
       auto _ = nda::range::all;
       if constexpr (Rank == 1) {
-        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(0, _).data(), nullptr, nullptr, 0, nullptr, nullptr, nullptr));
+        CHECK_ERROR(finufft_setpts(plan, buf_counter, x_arr(0, _).data(), nullptr, nullptr, 0, nullptr, nullptr, nullptr));
       } else if constexpr (Rank == 2) {
-        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(1, _).data(), x_arr(0, _).data(), nullptr, 0, nullptr, nullptr, nullptr));
+        CHECK_ERROR(finufft_setpts(plan, buf_counter, x_arr(1, _).data(), x_arr(0, _).data(), nullptr, 0, nullptr, nullptr, nullptr));
       } else { // Rank == 3
-        CHECK_ERROR(finufft_setpts(plan, buf_size, x_arr(2, _).data(), x_arr(1, _).data(), x_arr(0, _).data(), 0, nullptr, nullptr, nullptr));
+        CHECK_ERROR(finufft_setpts(plan, buf_counter, x_arr(2, _).data(), x_arr(1, _).data(), x_arr(0, _).data(), 0, nullptr, nullptr, nullptr));
       }
       CHECK_ERROR(finufft_execute(plan, fx_arr.data(), fk_arr.data()));
 

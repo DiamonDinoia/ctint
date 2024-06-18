@@ -52,7 +52,7 @@ S.solve(
     n_warmup_cycles=1000,
     measure_M4_iw=True,
     n_iw_M4=32,
-    nfft_buf_size=50,
+    # nfft_buf_size=100000,
     # measure_M3pp_tau=True,
     # measure_M3ph_tau=True,
     # measure_M3xph_tau=True,
