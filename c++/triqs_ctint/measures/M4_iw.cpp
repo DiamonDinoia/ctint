@@ -66,7 +66,7 @@ namespace triqs_ctint::measures {
               {
                 const auto M1val          = M1[iw2.value(), iw1](j, i) * sign;
                 const auto bl2square      = bl2_size * bl2_size;
-                if constexpr (bl1_batch >= bl1_batch) {
+                if constexpr (bl1_batch >= min_width) {
                   const auto M1_v           = batch1_t(M1val);
                   const auto truncated_size = bl2square & (-batch1_t::size);
                   if (bl2square >= batch1_t::size) {
