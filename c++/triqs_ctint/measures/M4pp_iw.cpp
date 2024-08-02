@@ -48,9 +48,6 @@ namespace triqs_ctint::measures {
     for (auto &buf_arr : buf_arrarr)
       for (auto &buf : buf_arr) buf.flush(); // Flush remaining points from all buffers
 
-    auto const &iW_mesh = std::get<0>(M4pp_iw_(0, 0).mesh());
-    auto const &iw_mesh = std::get<1>(M4pp_iw_(0, 0).mesh());
-
     for (int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
       for (int bl2 : range(params.n_blocks())) {
         auto const bl2_size = M[bl2].target_shape()[0];
