@@ -12,6 +12,8 @@ set(all_tests
   static/two_site
   static/jacobi_test
   static/plaquette
+  static/plaquette_M3
+  static/plaquette_M4
   dynamic/all_continuousBoson
   dynamic/all
   dynamic/densdens
