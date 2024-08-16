@@ -50,7 +50,7 @@ namespace triqs_ctint::measures {
     for (int bl1 : range(params.n_blocks())) { // FIXME c++17 Loops
       for (int bl2 : range(params.n_blocks())) {
         auto const bl2_size = M[bl2].target_shape()[0];
-        simd::iw_accumulate(sign, M, M4ph_iw_, bl1, bl2, bl2_size);
+        simd::iw4_accumulate(sign, M, M4ph_iw_, bl1, bl2, bl2_size);
       }
     }
   }
