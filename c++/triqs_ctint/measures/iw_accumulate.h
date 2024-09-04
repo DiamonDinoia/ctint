@@ -91,7 +91,7 @@ namespace triqs_ctint::measures {
       auto const bl2_size = M[bl2].target_shape()[0];
       auto const M1       = M[bl1];
       auto const M2       = M[bl2];
-      auto M4             = M4_iw(bl1, bl2);
+      auto &M4            = M4_iw(bl1, bl2);
 
       for (const auto &iw1 : iw_mesh) {
         for (const auto &iw2 : iw_mesh) {
@@ -116,15 +116,15 @@ namespace triqs_ctint::measures {
       auto const bl2_size = M[bl2].target_shape()[0];
       auto const M1       = M[bl1];
       auto const M2       = M[bl2];
-      auto M4             = M4_iw(bl1, bl2);
+      auto &M4            = M4_iw(bl1, bl2);
 
-      for (auto iW : iW_mesh){
-        for (auto iw : iw_mesh){
-          for (auto iwp : iw_mesh){
+      for (auto iW : iW_mesh) {
+        for (auto iw : iw_mesh) {
+          for (auto iwp : iw_mesh) {
             const auto M1a = M1[iW + iw, iw.value()];
             const auto M2a = M2[iwp.value(), iW + iwp];
             const auto M1b = M1[iwp.value(), iw.value()];
-            const auto M2b = M2[iwp.value(), iw.value()];
+            const auto M2b = M2[iW + iw, iW + iwp];
             auto M4a       = M4[iW, iw, iwp];
             process_inner_loop<bl1_batch, bl2_batch>(sign, M1a, M2a, M1b, M2b, M4a, bl1_size, bl2_size, bl1, bl2);
           }
@@ -140,11 +140,11 @@ namespace triqs_ctint::measures {
       auto const bl2_size = M[bl2].target_shape()[0];
       auto const M1       = M[bl1];
       auto const M2       = M[bl2];
-      auto M4             = M4_iw(bl1, bl2);
+      auto &M4            = M4_iw(bl1, bl2);
 
-      for (auto iW : iW_mesh){
-        for (auto iw : iw_mesh){
-          for (auto iwp : iw_mesh){
+      for (auto iW : iW_mesh) {
+        for (auto iw : iw_mesh) {
+          for (auto iwp : iw_mesh) {
             const auto M1a = M1[iW - iwp, iw.value()];
             const auto M2a = M2[iwp.value(), iW - iw];
             const auto M1b = M1[iwp.value(), iw.value()];
