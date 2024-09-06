@@ -44,7 +44,7 @@ for bl, g_bl in S.G0_iw: g_bl << inverse(iOmega_n - hloc0_mat)
 
 # --------- Solve! ----------
 S.solve(h_int=h_int,
-        n_cycles = 10,
+        n_cycles = 200,
         length_cycle = 50,
         n_warmup_cycles = 100,
         random_seed = 34788,
