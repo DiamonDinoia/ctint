@@ -32,7 +32,7 @@ install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} DESTINATION include FILES_MATCHING
 # ========= Additional Dependencies ==========
 
 target_link_libraries(${PROJECT_NAME}_c PRIVATE finufft)
-install(TARGETS finufft finufft_f32 finufft_f64 EXPORT triqs_ctint-targets)
+install(TARGETS finufft EXPORT triqs_ctint-targets)
 
 target_link_libraries(${PROJECT_NAME}_c PRIVATE xsimd)
 install(TARGETS xsimd EXPORT triqs_ctint-targets)
