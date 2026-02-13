@@ -14,7 +14,7 @@ test_name = "plaquette"
 U = 1.0  # Density-density interaction
 t = 1.0  # Hopping
 mu = U / 2.0  # Chemical Potential
-beta = 100.0  # Inverse temperature
+beta = 10.0  # Inverse temperature
 
 ######## simulation parameters ########
 n_cyc = 50
