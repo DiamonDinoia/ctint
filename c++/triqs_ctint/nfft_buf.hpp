@@ -71,6 +71,10 @@ namespace triqs::utility {
          fx_arr(buf_size_),
          tol(tol_) {
 
+      // Contiguous intermediate buffer for all non-uniform types.
+      // Direct kernels write to fk_vec (contiguous), then copy to fiw_vec (possibly strided).
+      fk_vec.resize(n_targets);
+
       if (type == nfft_type_t::type3) {
         init_type3(target_mf_);
 
@@ -261,7 +265,6 @@ namespace triqs::utility {
       s_arr.resize(Rank, n_targets);
       for (int r = 0; r < Rank; ++r)
         for (int64_t d = 0; d < n_targets; ++d) s_arr(r, d) = std::imag(dcomplex(target_mf_[d][r]));
-      fk_vec.resize(n_targets);
       finufft_default_opts(&opts);
       opts.nthreads         = 1;
       finufft_plan raw_plan = nullptr;
@@ -388,24 +391,31 @@ namespace triqs::utility {
       for (; d < n_targets_total; ++d) accumulate_one(d);
     }
 
+    // Run a direct kernel into fk_vec (contiguous), then copy to fiw_vec (possibly strided).
+    template <typename DirectKernel> void run_direct(DirectKernel &&kernel) {
+      fk_vec = 0;
+      kernel();
+      fiw_vec += fk_vec;
+    }
+
     void do_nfft() {
       if (nfft_type == nfft_type_t::type1)
         do_nfft_type1();
       else if (nfft_type == nfft_type_t::automatic) {
         if (static_cast<int64_t>(buf_counter) * n_targets < dispatch_threshold)
-          do_direct_naf();
+          run_direct([this] { do_direct_naf(); });
         else
           do_nfft_type3();
       } else if (nfft_type == nfft_type_t::type3)
         do_nfft_type3();
       else if (nfft_type == nfft_type_t::direct_type3)
-        do_direct_naf();
+        run_direct([this] { do_direct_naf(); });
       else if (nfft_type == nfft_type_t::direct_bitwise)
-        do_direct_bitwise();
+        run_direct([this] { do_direct_bitwise(); });
       else if (nfft_type == nfft_type_t::direct_prime)
-        do_direct_prime();
+        run_direct([this] { do_direct_prime(); });
       else
-        do_direct_type1();
+        run_direct([this] { do_direct_type1(); });
     }
 
     // FINUFFT expects coordinates in reverse rank order
@@ -443,7 +453,7 @@ namespace triqs::utility {
       double const pi_over_beta      = M_PI / beta;
       int64_t const buf_counter_simd = buf_counter & -simd_size;
       int64_t const stride           = buf_size;
-      dcomplex *fiw_ptr              = fiw_vec.data();
+      dcomplex *fiw_ptr              = fk_vec.data();
 
       // Phase 1: Build per-rank pow2 tables via sincos + repeated squaring
       poet::static_for<Rank>([&](const auto r) {
@@ -508,7 +518,7 @@ namespace triqs::utility {
     void do_direct_prime() {
       double const pi_over_beta      = M_PI / beta;
       int64_t const buf_counter_simd = buf_counter & -simd_size;
-      dcomplex *fiw_ptr              = fiw_vec.data();
+      dcomplex *fiw_ptr              = fk_vec.data();
       int const num_primes           = static_cast<int>(primes.size());
 
       // Build prime power table: prime_pow_tbl[r](p_idx, j) = z_r^prime
@@ -577,7 +587,7 @@ namespace triqs::utility {
       double const pi_over_beta      = M_PI / beta;
       int64_t const buf_counter_simd = buf_counter & -simd_size;
       int64_t const stride           = buf_size;
-      dcomplex *fiw_ptr              = fiw_vec.data();
+      dcomplex *fiw_ptr              = fk_vec.data();
 
       // Phase 1: Build per-rank pow2 tables via repeated squaring (raw pointer access)
       poet::static_for<Rank>([&](const auto r) {
@@ -700,14 +710,14 @@ namespace triqs::utility {
             fiw_ptr[d] += xsimd::reduce_add(local_sum);
           }
         }
+
+        // Scalar tail: only needed for the blocking path (accumulate_targets_ilp handles it internally)
+        for (int j = buf_counter_simd; j < buf_counter; ++j) {
+          dcomplex fj = fx_arr[j];
+          for (int64_t d = 0; d < n_targets; ++d) fiw_ptr[d] += fj * compute_scalar_pow(d, j);
+        }
       } else {
         accumulate_targets_ilp<n_acc_naf>(n_targets, buf_counter_simd, fiw_ptr, compute_simd_pow, compute_scalar_pow);
-      }
-
-      // Scalar tail
-      for (int j = buf_counter_simd; j < buf_counter; ++j) {
-        dcomplex fj = fx_arr[j];
-        for (int64_t d = 0; d < n_targets; ++d) fiw_ptr[d] += fj * compute_scalar_pow(d, j);
       }
     }
 
@@ -719,7 +729,7 @@ namespace triqs::utility {
 
       double const pi_over_beta    = M_PI / beta;
       int64_t const n_targets_simd = n_targets - (n_targets % static_cast<int64_t>(simd_size_t1));
-      dcomplex *fiw_ptr            = fiw_vec.data();
+      dcomplex *fiw_ptr            = fk_vec.data();
 
       // Phase 1: Build power tables pow_tbl[r](j,i) = z^(2*(n_min+i)+1)
       for (int r = 0; r < Rank; ++r) {
