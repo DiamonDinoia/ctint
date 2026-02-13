@@ -522,9 +522,11 @@ void run_direct_analytical_1d(nfft_type_t type, double beta, auto f_tau) {
 }
 
 TEST_F(Nfft, DirectType1_Analytical_1D) { run_direct_analytical_1d(nfft_type_t::direct_type1, beta, [&](double tau) { return f_tau(tau); }); }
-TEST_F(Nfft, DirectType3_Analytical_1D) { run_direct_analytical_1d(nfft_type_t::direct_type3, beta, [&](double tau) { return f_tau(tau); }); }
-TEST_F(Nfft, DirectNAF_Analytical_1D) {
-  run_direct_analytical_1d(nfft_type_t::direct_naf, beta, [&](double tau) { return f_tau(tau); });
+TEST_F(Nfft, DirectBitwise_Analytical_1D) {
+  run_direct_analytical_1d(nfft_type_t::direct_bitwise, beta, [&](double tau) { return f_tau(tau); });
+}
+TEST_F(Nfft, DirectType3_Analytical_1D) {
+  run_direct_analytical_1d(nfft_type_t::direct_type3, beta, [&](double tau) { return f_tau(tau); });
 }
 
 /********************* DIRECT: Analytical 2D ********************/
@@ -575,9 +577,11 @@ void run_direct_analytical_2d(nfft_type_t type, double beta, auto f_tau) {
 }
 
 TEST_F(Nfft, DirectType1_Analytical_2D) { run_direct_analytical_2d(nfft_type_t::direct_type1, beta, [&](double tau) { return f_tau(tau); }); }
-TEST_F(Nfft, DirectType3_Analytical_2D) { run_direct_analytical_2d(nfft_type_t::direct_type3, beta, [&](double tau) { return f_tau(tau); }); }
-TEST_F(Nfft, DirectNAF_Analytical_2D) {
-  run_direct_analytical_2d(nfft_type_t::direct_naf, beta, [&](double tau) { return f_tau(tau); });
+TEST_F(Nfft, DirectPrime_Analytical_2D) {
+  run_direct_analytical_2d(nfft_type_t::direct_prime, beta, [&](double tau) { return f_tau(tau); });
+}
+TEST_F(Nfft, DirectType3_Analytical_2D) {
+  run_direct_analytical_2d(nfft_type_t::direct_type3, beta, [&](double tau) { return f_tau(tau); });
 }
 
 /********************* DIRECT vs TYPE 3: Consistency 1D ********************/
@@ -623,8 +627,8 @@ void run_direct_vs_type3_1d(nfft_type_t direct_type, double beta, int n_iw) {
 }
 
 TEST_F(Nfft, DirectType1_vs_Type3_1D) { run_direct_vs_type3_1d(nfft_type_t::direct_type1, beta, n_iw); }
+TEST_F(Nfft, DirectBitwise_vs_Type3_1D) { run_direct_vs_type3_1d(nfft_type_t::direct_bitwise, beta, n_iw); }
 TEST_F(Nfft, DirectType3_vs_Type3_1D) { run_direct_vs_type3_1d(nfft_type_t::direct_type3, beta, n_iw); }
-TEST_F(Nfft, DirectNAF_vs_Type3_1D) { run_direct_vs_type3_1d(nfft_type_t::direct_naf, beta, n_iw); }
 
 /********************* DIRECT vs TYPE 3: Consistency 2D ********************/
 void run_direct_vs_type3_2d(nfft_type_t direct_type, double beta) {
@@ -673,7 +677,7 @@ void run_direct_vs_type3_2d(nfft_type_t direct_type, double beta) {
 }
 
 TEST_F(Nfft, DirectType1_vs_Type3_2D) { run_direct_vs_type3_2d(nfft_type_t::direct_type1, beta); }
+TEST_F(Nfft, DirectPrime_vs_Type3_2D) { run_direct_vs_type3_2d(nfft_type_t::direct_prime, beta); }
 TEST_F(Nfft, DirectType3_vs_Type3_2D) { run_direct_vs_type3_2d(nfft_type_t::direct_type3, beta); }
-TEST_F(Nfft, DirectNAF_vs_Type3_2D) { run_direct_vs_type3_2d(nfft_type_t::direct_naf, beta); }
 
 MAKE_MAIN;
