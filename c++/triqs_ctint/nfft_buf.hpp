@@ -65,10 +65,10 @@ namespace triqs::utility {
                nfft_type_t type = nfft_type_t::automatic, double tol_ = 1e-15)
        : nfft_type(type),
          fiw_vec(std::move(fiw_vec_)),
-         buf_size(buf_size_),
+         buf_size(round_up_simd(buf_size_)),
          n_targets(static_cast<int64_t>(target_mf_.size())),
-         x_arr(Rank, buf_size_),
-         fx_arr(buf_size_),
+         x_arr(Rank, buf_size),
+         fx_arr(buf_size),
          tol(tol_) {
 
       // Contiguous intermediate buffer for all non-uniform types.
@@ -88,7 +88,7 @@ namespace triqs::utility {
           n_min_arr[r]   = *mn;
           n_range_arr[r] = *mx - *mn + 1;
         }
-        for (int r = 0; r < Rank; ++r) pow_tbl[r].resize(buf_size_, n_range_arr[r]);
+        for (int r = 0; r < Rank; ++r) pow_tbl[r].resize(buf_size, n_range_arr[r]);
 
         // Precompute doubled offset indices for AoS gather
         target_idx.resize(Rank * n_targets);
@@ -96,7 +96,7 @@ namespace triqs::utility {
           for (int64_t d = 0; d < n_targets; ++d) target_idx[r * n_targets + d] = 2 * (target_n(r, d) - n_min_arr[r]);
 
       } else if (type == nfft_type_t::direct_type3) {
-        init_direct_naf(target_mf_, buf_size_);
+        init_direct_naf(target_mf_);
 
       } else if (type == nfft_type_t::direct_bitwise) {
         init_direct_common(target_mf_);
@@ -113,7 +113,7 @@ namespace triqs::utility {
           }
         }
         num_pow2_levels_bitwise = std::max(1, static_cast<int>(std::bit_width(max_exponent)));
-        for (int r = 0; r < Rank; ++r) bitwise_pow2_tbl[r].resize(num_pow2_levels_bitwise, buf_size_);
+        for (int r = 0; r < Rank; ++r) bitwise_pow2_tbl[r].resize(num_pow2_levels_bitwise, buf_size);
 
       } else if (type == nfft_type_t::direct_prime) {
         init_direct_common(target_mf_);
@@ -131,11 +131,11 @@ namespace triqs::utility {
         for (int r = 0; r < Rank; ++r)
           for (int64_t d = 0; d < n_targets; ++d)
             for (int &p : target_prime_sums[r][d]) p = static_cast<int>(std::find(primes.begin(), primes.end(), p) - primes.begin());
-        for (int r = 0; r < Rank; ++r) prime_pow_tbl[r].resize(primes.size(), buf_size_);
+        for (int r = 0; r < Rank; ++r) prime_pow_tbl[r].resize(primes.size(), buf_size);
 
       } else if (type == nfft_type_t::automatic) {
         init_type3(target_mf_);
-        init_direct_naf(target_mf_, buf_size_);
+        init_direct_naf(target_mf_);
 
       } else {
         NDA_RUNTIME_ERROR << "nfft_buf_t: unsupported nfft_type_t for non-uniform target constructor\n";
@@ -210,6 +210,10 @@ namespace triqs::utility {
     private:
     nfft_type_t nfft_type = nfft_type_t::type1;
 
+    using cbatch                        = xsimd::batch<dcomplex>;
+    static constexpr std::size_t simd_size = cbatch::size;
+    static constexpr int round_up_simd(int n) { return (n + static_cast<int>(simd_size) - 1) & ~(static_cast<int>(simd_size) - 1); }
+
     // Type 1 output (uniform grid)
     nda::array_view<dcomplex, Rank> fiw_arr;
     nda::array_view<dcomplex, 1> fiw_vec; // Type 3 / direct output (non-uniform targets)
@@ -218,6 +222,7 @@ namespace triqs::utility {
     int buf_size = 0;
     double beta = 0;
     int buf_counter = 0;
+    int buf_counter_padded = 0;
     int common_factor = 1;
     int64_t n_targets = 0;
     finufft_opts opts{};
@@ -279,7 +284,7 @@ namespace triqs::utility {
         for (int64_t d = 0; d < n_targets; ++d) target_n(r, d) = target_mf_[d][r].n;
     }
 
-    void init_direct_naf(target_mf_vec const &target_mf_, int buf_size_) {
+    void init_direct_naf(target_mf_vec const &target_mf_) {
       init_direct_common(target_mf_);
       unsigned long max_exponent = 0;
       for (int r = 0; r < Rank; ++r) {
@@ -294,7 +299,7 @@ namespace triqs::utility {
         }
       }
       naf_num_pow2_levels = std::max(1, static_cast<int>(std::bit_width(max_exponent)) + 1);
-      for (int r = 0; r < Rank; ++r) naf_pow2_tbl[r].resize(naf_num_pow2_levels, buf_size_);
+      for (int r = 0; r < Rank; ++r) naf_pow2_tbl[r].resize(naf_num_pow2_levels, buf_size);
     }
 
     // |2n+1| for fermionic Matsubara index n
@@ -312,8 +317,6 @@ namespace triqs::utility {
       return true;
     }
 
-    using cbatch                        = xsimd::batch<dcomplex>;
-    static constexpr std::size_t simd_size = cbatch::size;
     static constexpr int n_acc_bitwise     = 4; // ILP accumulators for Rank==1
     static constexpr int n_acc_prime       = 4; // ILP accumulators for Rank>1
     static constexpr int n_acc_naf         = 4; // ILP accumulators for NAF
@@ -349,18 +352,15 @@ namespace triqs::utility {
 
     // SIMD+ILP target accumulation: processes n_acc targets simultaneously.
     // compute_simd_pow(d, j) returns SIMD batch of exp(i*omega_d*tau_j).
-    // compute_scalar_pow(d, j) returns scalar version for the tail.
-    template <int n_acc, typename SimdPowFunc, typename ScalarPowFunc>
-    [[gnu::always_inline]] inline void accumulate_targets_ilp(int64_t n_targets_total, int64_t buf_counter_simd, dcomplex *fiw_ptr,
-                                                               SimdPowFunc &&compute_simd_pow, ScalarPowFunc &&compute_scalar_pow) {
+    // Sources are zero-padded to buf_counter_padded, so no scalar tail is needed.
+    template <int n_acc, typename SimdPowFunc>
+    [[gnu::always_inline]] inline void accumulate_targets_ilp(int64_t n_targets_total, dcomplex *fiw_ptr,
+                                                               SimdPowFunc &&compute_simd_pow) {
       auto accumulate_one = [&](int64_t d) {
         cbatch sum_vec(dcomplex{0, 0});
-        for (int j = 0; j < buf_counter_simd; j += simd_size)
+        for (int j = 0; j < buf_counter_padded; j += simd_size)
           sum_vec = xsimd::fma(cbatch::load_unaligned(fx_arr.data() + j), compute_simd_pow(d, j), sum_vec);
-        dcomplex sum = xsimd::reduce_add(sum_vec);
-        for (int j = buf_counter_simd; j < buf_counter; ++j)
-          sum += fx_arr[j] * compute_scalar_pow(d, j);
-        fiw_ptr[d] += sum;
+        fiw_ptr[d] += xsimd::reduce_add(sum_vec);
       };
 
       int64_t const n_targets_main = (n_targets_total / n_acc) * n_acc;
@@ -370,22 +370,14 @@ namespace triqs::utility {
         std::array<cbatch, n_acc> sum_vecs;
         poet::static_for<n_acc>([&](const auto i) { sum_vecs[i] = cbatch(dcomplex{0, 0}); });
 
-        for (int j = 0; j < buf_counter_simd; j += simd_size) {
+        for (int j = 0; j < buf_counter_padded; j += simd_size) {
           cbatch fj = cbatch::load_unaligned(fx_arr.data() + j);
           poet::static_for<n_acc>([&](const auto i) {
             sum_vecs[i] = xsimd::fma(fj, compute_simd_pow(d + i, j), sum_vecs[i]);
           });
         }
 
-        std::array<dcomplex, n_acc> sums;
-        poet::static_for<n_acc>([&](const auto i) { sums[i] = xsimd::reduce_add(sum_vecs[i]); });
-
-        for (int j = buf_counter_simd; j < buf_counter; ++j) {
-          dcomplex fj = fx_arr[j];
-          poet::static_for<n_acc>([&](const auto i) { sums[i] += fj * compute_scalar_pow(d + i, j); });
-        }
-
-        poet::static_for<n_acc>([&](const auto i) { fiw_ptr[d + i] += sums[i]; });
+        poet::static_for<n_acc>([&](const auto i) { fiw_ptr[d + i] += xsimd::reduce_add(sum_vecs[i]); });
       }
 
       for (; d < n_targets_total; ++d) accumulate_one(d);
@@ -393,6 +385,12 @@ namespace triqs::utility {
 
     // Run a direct kernel into fk_vec (contiguous), then copy to fiw_vec (possibly strided).
     template <typename DirectKernel> void run_direct(DirectKernel &&kernel) {
+      int const padded = round_up_simd(buf_counter);
+      for (int j = buf_counter; j < padded; ++j) {
+        fx_arr[j] = 0;
+        for (int r = 0; r < Rank; ++r) x_arr(r, j) = 0;
+      }
+      buf_counter_padded = padded;
       fk_vec = 0;
       kernel();
       fiw_vec += fk_vec;
@@ -447,48 +445,41 @@ namespace triqs::utility {
       fiw_vec += fk_vec;
     }
 
-    // Direct NUDFT via bitwise power-of-two decomposition.
-    // z = exp(i*pi*tau/beta), z^|2n+1| computed via binary exponentiation.
-    void do_direct_bitwise() {
-      double const pi_over_beta      = M_PI / beta;
-      int64_t const buf_counter_simd = buf_counter & -simd_size;
-      int64_t const stride           = buf_size;
-      dcomplex *fiw_ptr              = fk_vec.data();
-
-      // Phase 1: Build per-rank pow2 tables via sincos + repeated squaring
+    // Build per-rank pow2 tables via sincos + repeated squaring (shared by bitwise & NAF kernels).
+    void build_pow2_tables(std::array<nda::array<dcomplex, 2>, Rank> &tbl_arr, int num_levels) {
+      double const pi_over_beta = M_PI / beta;
+      int64_t const stride      = buf_size;
       poet::static_for<Rank>([&](const auto r) {
-        dcomplex *tbl = bitwise_pow2_tbl[r].data();
-
-        for (int j = 0; j < buf_counter_simd; j += simd_size) {
+        dcomplex *tbl = tbl_arr[r].data();
+        for (int j = 0; j < buf_counter_padded; j += simd_size) {
           using rbatch            = xsimd::batch<double>;
           auto [sin_vec, cos_vec] = xsimd::sincos(rbatch::load_unaligned(&x_arr(r, j)) * pi_over_beta);
           cbatch(cos_vec, sin_vec).store_unaligned(tbl + j);
         }
-        for (int j = buf_counter_simd; j < buf_counter; ++j) {
-          double const theta = pi_over_beta * x_arr(r, j);
-          tbl[j]             = dcomplex{std::cos(theta), std::sin(theta)};
-        }
-
-        for (int k = 1; k < num_pow2_levels_bitwise; ++k) {
+        for (int k = 1; k < num_levels; ++k) {
           dcomplex const *prev_row = tbl + (k - 1) * stride;
           dcomplex *cur_row        = tbl + k * stride;
-          for (int j = 0; j < buf_counter_simd; j += simd_size) {
+          for (int j = 0; j < buf_counter_padded; j += simd_size) {
             cbatch prev = cbatch::load_unaligned(prev_row + j);
             (prev * prev).store_unaligned(cur_row + j);
           }
-          for (int j = buf_counter_simd; j < buf_counter; ++j) {
-            dcomplex prev = prev_row[j];
-            cur_row[j]    = prev * prev;
-          }
         }
       });
+    }
 
-      // Phase 2: accumulate with per-rank bit products
+    // Direct NUDFT via bitwise power-of-two decomposition.
+    // z = exp(i*pi*tau/beta), z^|2n+1| computed via binary exponentiation.
+    void do_direct_bitwise() {
+      int64_t const stride = buf_size;
+      dcomplex *fiw_ptr    = fk_vec.data();
+
+      build_pow2_tables(bitwise_pow2_tbl, num_pow2_levels_bitwise);
+
       std::array<dcomplex const *, Rank> tbl_base;
       poet::static_for<Rank>([&](const auto r) { tbl_base[r] = bitwise_pow2_tbl[r].data(); });
 
       accumulate_targets_ilp<n_acc_bitwise>(
-         n_targets, buf_counter_simd, fiw_ptr,
+         n_targets, fiw_ptr,
          [&](int64_t d, int j) -> cbatch {
            cbatch pow_prod;
            poet::static_for<Rank>([&](const auto r) {
@@ -499,44 +490,35 @@ namespace triqs::utility {
              pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
            });
            return pow_prod;
-         },
-         [&](int64_t d, int j) -> dcomplex {
-           dcomplex pow_prod{1.0, 0.0};
-           poet::static_for<Rank>([&](const auto r) {
-             auto const *base = tbl_base[r];
-             dcomplex rank_pow{1.0, 0.0};
-             for (int k : bitwise_pow2_bits[r][d]) rank_pow *= *(base + k * stride + j);
-             rank_pow = target_n(r, d) < 0 ? std::conj(rank_pow) : rank_pow;
-             pow_prod *= rank_pow;
-           });
-           return pow_prod;
          });
     }
 
     // Direct NUDFT via prime-sum decomposition.
     // |2n+1| = p1+p2+... so z^|2n+1| = z^p1 * z^p2 * ..., sharing z^p across targets.
     void do_direct_prime() {
-      double const pi_over_beta      = M_PI / beta;
-      int64_t const buf_counter_simd = buf_counter & -simd_size;
-      dcomplex *fiw_ptr              = fk_vec.data();
-      int const num_primes           = static_cast<int>(primes.size());
+      double const pi_over_beta = M_PI / beta;
+      dcomplex *fiw_ptr         = fk_vec.data();
+      int const num_primes      = static_cast<int>(primes.size());
 
       // Build prime power table: prime_pow_tbl[r](p_idx, j) = z_r^prime
       poet::static_for<Rank>([&](const auto r) {
-        std::vector<dcomplex> z_vals(buf_counter);
-        for (int j = 0; j < buf_counter; ++j) {
-          double const theta = pi_over_beta * x_arr(r, j);
-          z_vals[j]          = dcomplex{std::cos(theta), std::sin(theta)};
+        // Compute z_vals via SIMD sincos (padded)
+        nda::vector<dcomplex> z_vals(buf_counter_padded);
+        for (int j = 0; j < buf_counter_padded; j += simd_size) {
+          using rbatch            = xsimd::batch<double>;
+          auto [sin_vec, cos_vec] = xsimd::sincos(rbatch::load_unaligned(&x_arr(r, j)) * pi_over_beta);
+          cbatch(cos_vec, sin_vec).store_unaligned(&z_vals[j]);
         }
 
         for (int p_idx = 0; p_idx < num_primes; ++p_idx) {
           int prime = primes[p_idx];
           if (prime == 1) {
-            for (int j = 0; j < buf_counter; ++j) prime_pow_tbl[r](p_idx, j) = z_vals[j];
+            for (int j = 0; j < buf_counter_padded; j += simd_size)
+              cbatch::load_unaligned(&z_vals[j]).store_unaligned(&prime_pow_tbl[r](p_idx, j));
             continue;
           }
-          // Binary exponentiation: z^prime
-          for (int j = 0; j < buf_counter_simd; j += simd_size) {
+          // Binary exponentiation: z^prime (SIMD, no scalar tail needed)
+          for (int j = 0; j < buf_counter_padded; j += simd_size) {
             cbatch result(dcomplex{1.0, 0.0});
             cbatch base = cbatch::load_unaligned(&z_vals[j]);
             for (int exp = prime; exp > 0; exp >>= 1) {
@@ -545,19 +527,10 @@ namespace triqs::utility {
             }
             result.store_unaligned(&prime_pow_tbl[r](p_idx, j));
           }
-          for (int j = buf_counter_simd; j < buf_counter; ++j) {
-            dcomplex result{1.0, 0.0};
-            dcomplex base = z_vals[j];
-            for (int exp = prime; exp > 0; exp >>= 1) {
-              if (exp & 1) result *= base;
-              base *= base;
-            }
-            prime_pow_tbl[r](p_idx, j) = result;
-          }
         }
       });
 
-      accumulate_targets_ilp<n_acc_prime>(n_targets, buf_counter_simd, fiw_ptr,
+      accumulate_targets_ilp<n_acc_prime>(n_targets, fiw_ptr,
         [&](int64_t d, int j) -> cbatch {
           cbatch pow_prod;
           poet::static_for<Rank>([&](const auto r) {
@@ -567,16 +540,6 @@ namespace triqs::utility {
             pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
           });
           return pow_prod;
-        },
-        [&](int64_t d, int j) -> dcomplex {
-          dcomplex pow_prod{1.0, 0.0};
-          poet::static_for<Rank>([&](const auto r) {
-            dcomplex rank_pow{1.0, 0.0};
-            for (int pi : target_prime_sums[r][d]) rank_pow *= prime_pow_tbl[r](pi, j);
-            rank_pow  = (target_n(r, d) < 0) ? std::conj(rank_pow) : rank_pow;
-            pow_prod *= rank_pow;
-          });
-          return pow_prod;
         });
     }
 
@@ -584,45 +547,12 @@ namespace triqs::utility {
     // Uses the same power-of-two table as bitwise, but signed digits {-1,0,+1}
     // reduce average non-zero count from L/2 to L/3. Conjugation for -1 digits is free.
     void do_direct_naf() {
-      double const pi_over_beta      = M_PI / beta;
-      int64_t const buf_counter_simd = buf_counter & -simd_size;
-      int64_t const stride           = buf_size;
-      dcomplex *fiw_ptr              = fk_vec.data();
+      int64_t const stride = buf_size;
+      dcomplex *fiw_ptr    = fk_vec.data();
 
-      // Phase 1: Build per-rank pow2 tables via repeated squaring (raw pointer access)
-      poet::static_for<Rank>([&](const auto r) {
-        dcomplex *tbl = naf_pow2_tbl[r].data();
-
-        // Level 0: z_r = exp(i*pi*tau_r/beta)
-        for (int j = 0; j < buf_counter_simd; j += simd_size) {
-          using rbatch            = xsimd::batch<double>;
-          auto [sin_vec, cos_vec] = xsimd::sincos(rbatch::load_unaligned(&x_arr(r, j)) * pi_over_beta);
-          cbatch(cos_vec, sin_vec).store_unaligned(tbl + j);
-        }
-        for (int j = buf_counter_simd; j < buf_counter; ++j) {
-          double const theta = pi_over_beta * x_arr(r, j);
-          tbl[j]             = dcomplex{std::cos(theta), std::sin(theta)};
-        }
-
-        // Higher levels: squaring
-        for (int k = 1; k < naf_num_pow2_levels; ++k) {
-          dcomplex const *prev_row = tbl + (k - 1) * stride;
-          dcomplex *cur_row        = tbl + k * stride;
-          for (int j = 0; j < buf_counter_simd; j += simd_size) {
-            cbatch prev = cbatch::load_unaligned(prev_row + j);
-            (prev * prev).store_unaligned(cur_row + j);
-          }
-          for (int j = buf_counter_simd; j < buf_counter; ++j) {
-            dcomplex prev = prev_row[j];
-            cur_row[j]    = prev * prev;
-          }
-        }
-      });
+      build_pow2_tables(naf_pow2_tbl, naf_num_pow2_levels);
 
       // Phase 2: Source-blocked accumulation for cache locality.
-      // The pow2 table is buf_size * n_levels * 16 bytes per rank, which can far exceed
-      // L1/L2 cache. By processing sources in blocks, table data at each j position
-      // stays in L1 as we iterate over all targets within the block.
       std::array<dcomplex const *, Rank> tbl_base;
       poet::static_for<Rank>([&](const auto r) { tbl_base[r] = naf_pow2_tbl[r].data(); });
 
@@ -651,35 +581,10 @@ namespace triqs::utility {
         return pow_prod;
       };
 
-      auto compute_scalar_pow = [&](int64_t d, int j) -> dcomplex {
-        dcomplex pow_prod{1.0, 0.0};
-        poet::static_for<Rank>([&](const auto r) {
-          int const *digits = naf_digits_flat[r].data() + naf_digit_offsets[r][d];
-          int n_digits      = naf_digit_offsets[r][d + 1] - naf_digit_offsets[r][d];
-          auto const *base  = tbl_base[r];
-
-          int d0            = digits[0];
-          int row0          = d0 >= 0 ? d0 : -(d0 + 1);
-          dcomplex rank_pow = *(base + row0 * stride + j);
-          if (d0 < 0) rank_pow = std::conj(rank_pow);
-
-          for (int i = 1; i < n_digits; ++i) {
-            int di       = digits[i];
-            int row      = di >= 0 ? di : -(di + 1);
-            dcomplex val = *(base + row * stride + j);
-            rank_pow *= di >= 0 ? val : std::conj(val);
-          }
-
-          rank_pow = (target_n(r, d) < 0) ? std::conj(rank_pow) : rank_pow;
-          pow_prod *= rank_pow;
-        });
-        return pow_prod;
-      };
-
       // Use source blocking when the table exceeds L2 cache, otherwise use unblocked ILP.
       constexpr int64_t l2_bytes           = 2 * 1024 * 1024;
       int64_t const table_bytes_per_source = Rank * naf_num_pow2_levels * static_cast<int64_t>(sizeof(dcomplex));
-      bool const use_blocking              = buf_counter_simd * table_bytes_per_source > l2_bytes;
+      bool const use_blocking              = buf_counter_padded * table_bytes_per_source > l2_bytes;
 
       if (use_blocking) {
         // Source-blocked: process sources in L1-sized blocks, iterating over all
@@ -688,8 +593,8 @@ namespace triqs::utility {
         constexpr int n_acc          = n_acc_naf;
         int64_t const n_targets_main = (n_targets / n_acc) * n_acc;
 
-        for (int jb = 0; jb < buf_counter_simd; jb += source_block) {
-          int const j_end = std::min(jb + source_block, static_cast<int>(buf_counter_simd));
+        for (int jb = 0; jb < buf_counter_padded; jb += source_block) {
+          int const j_end = std::min(jb + source_block, buf_counter_padded);
 
           int64_t d = 0;
           for (; d < n_targets_main; d += n_acc) {
@@ -710,14 +615,8 @@ namespace triqs::utility {
             fiw_ptr[d] += xsimd::reduce_add(local_sum);
           }
         }
-
-        // Scalar tail: only needed for the blocking path (accumulate_targets_ilp handles it internally)
-        for (int j = buf_counter_simd; j < buf_counter; ++j) {
-          dcomplex fj = fx_arr[j];
-          for (int64_t d = 0; d < n_targets; ++d) fiw_ptr[d] += fj * compute_scalar_pow(d, j);
-        }
       } else {
-        accumulate_targets_ilp<n_acc_naf>(n_targets, buf_counter_simd, fiw_ptr, compute_simd_pow, compute_scalar_pow);
+        accumulate_targets_ilp<n_acc_naf>(n_targets, fiw_ptr, compute_simd_pow);
       }
     }
 
