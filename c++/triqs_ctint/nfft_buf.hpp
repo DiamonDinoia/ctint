@@ -317,9 +317,28 @@ namespace triqs::utility {
       return true;
     }
 
-    static constexpr int n_acc_bitwise     = 4; // ILP accumulators for Rank==1
-    static constexpr int n_acc_prime       = 4; // ILP accumulators for Rank>1
-    static constexpr int n_acc_naf         = 4; // ILP accumulators for NAF
+    // Number of SIMD registers available on the target architecture.
+    static constexpr int simd_num_regs = [] {
+      using arch = typename cbatch::arch_type;
+      // AVX-512 variants: 32 ZMM registers
+      if constexpr (std::is_base_of_v<xsimd::avx512f, arch>) return 32;
+#ifdef XSIMD_WITH_NEON
+      // ARM NEON: 32 V registers
+      else if constexpr (std::is_base_of_v<xsimd::neon, arch>) return 32;
+#endif
+#ifdef XSIMD_WITH_SVE
+      // ARM SVE: 32 Z registers
+      else if constexpr (std::is_base_of_v<xsimd::sve, arch>) return 32;
+#endif
+      // x86 SSE/AVX/AVX2: 16 XMM/YMM registers
+      else return 16;
+    }();
+
+    // Optimal ILP accumulator count based on available SIMD registers.
+    // Empirically determined from spill analysis (Clang 22, -O3):
+    //   16 regs (SSE/AVX2): n_acc=2 is zero-spill; n_acc=3+ spills heavily
+    //   32 regs (AVX-512/NEON/SVE): n_acc=4-5 is zero-spill
+    static constexpr int n_acc = std::clamp(simd_num_regs <= 16 ? 2 : 4, 2, 8);
 
     static std::vector<int> express_as_prime_sum(long n) {
       std::vector<int> out;
@@ -478,7 +497,7 @@ namespace triqs::utility {
       std::array<dcomplex const *, Rank> tbl_base;
       poet::static_for<Rank>([&](const auto r) { tbl_base[r] = bitwise_pow2_tbl[r].data(); });
 
-      accumulate_targets_ilp<n_acc_bitwise>(
+      accumulate_targets_ilp<n_acc>(
          n_targets, fiw_ptr,
          [&](int64_t d, int j) -> cbatch {
            cbatch pow_prod;
@@ -530,7 +549,7 @@ namespace triqs::utility {
         }
       });
 
-      accumulate_targets_ilp<n_acc_prime>(n_targets, fiw_ptr,
+      accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr,
         [&](int64_t d, int j) -> cbatch {
           cbatch pow_prod;
           poet::static_for<Rank>([&](const auto r) {
@@ -590,7 +609,6 @@ namespace triqs::utility {
         // Source-blocked: process sources in L1-sized blocks, iterating over all
         // targets per block so table data stays in L1 across target iterations.
         constexpr int source_block   = 128;
-        constexpr int n_acc          = n_acc_naf;
         int64_t const n_targets_main = (n_targets / n_acc) * n_acc;
 
         for (int jb = 0; jb < buf_counter_padded; jb += source_block) {
@@ -616,7 +634,7 @@ namespace triqs::utility {
           }
         }
       } else {
-        accumulate_targets_ilp<n_acc_naf>(n_targets, fiw_ptr, compute_simd_pow);
+        accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr, compute_simd_pow);
       }
     }
 
