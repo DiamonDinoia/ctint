@@ -104,6 +104,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Provide additional debugging information for Debug builds
 add_compile_options($<$<CONFIG:Debug>:-ggdb3>)
 
+# Raise constexpr evaluation step limit for compile-time DP tables in nfft_buf.hpp
+add_compile_options($<$<CXX_COMPILER_ID:AppleClang,Clang,IntelLLVM>:-fconstexpr-steps=10000000>)
+
 # Create an Interface target for compiler warnings
 add_library(${PROJECT_NAME}_warnings INTERFACE)
 target_compile_options(${PROJECT_NAME}_warnings

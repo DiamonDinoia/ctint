@@ -28,7 +28,7 @@ namespace triqs::utility {
   using nda::array_view;
   using dcomplex = std::complex<double>;
 
-  enum class nfft_type_t { automatic, type1, type3, direct_type1, direct_type3, direct_bitwise, direct_prime };
+  enum class nfft_type_t { automatic, type1, type3, direct_type1, direct_type3, direct_prime };
 
   template <int Rank> struct nfft_buf_t {
 
@@ -91,46 +91,38 @@ namespace triqs::utility {
         for (int r = 0; r < Rank; ++r) pow_tbl[r].resize(buf_size, n_range_arr[r]);
 
         // Precompute doubled offset indices for AoS gather
-        target_idx.resize(Rank * n_targets);
+        target_idx.resize(Rank, n_targets);
         for (int r = 0; r < Rank; ++r)
-          for (int64_t d = 0; d < n_targets; ++d) target_idx[r * n_targets + d] = 2 * (target_n(r, d) - n_min_arr[r]);
+          for (int64_t d = 0; d < n_targets; ++d) target_idx(r, d) = 2 * (target_n(r, d) - n_min_arr[r]);
 
       } else if (type == nfft_type_t::direct_type3) {
         init_direct_naf(target_mf_);
 
-      } else if (type == nfft_type_t::direct_bitwise) {
-        init_direct_common(target_mf_);
-        unsigned long max_exponent = 0;
-        for (int r = 0; r < Rank; ++r) {
-          bitwise_pow2_bits[r].resize(n_targets);
-          for (int64_t d = 0; d < n_targets; ++d) {
-            unsigned long exponent = odd_exponent_abs(target_n(r, d));
-            max_exponent           = std::max(max_exponent, exponent);
-            std::vector<int> bits;
-            for (int k = 0; exponent > 0; ++k, exponent >>= 1)
-              if (exponent & 1ul) bits.push_back(k);
-            bitwise_pow2_bits[r][d] = std::move(bits);
-          }
-        }
-        num_pow2_levels_bitwise = std::max(1, static_cast<int>(std::bit_width(max_exponent)));
-        for (int r = 0; r < Rank; ++r) bitwise_pow2_tbl[r].resize(num_pow2_levels_bitwise, buf_size);
-
       } else if (type == nfft_type_t::direct_prime) {
         init_direct_common(target_mf_);
         std::vector<int> all_primes;
+        // Temporary per-target decompositions (will be flattened below)
+        std::array<std::vector<std::vector<int>>, Rank> tmp_sums;
         for (int r = 0; r < Rank; ++r) {
-          target_prime_sums[r].resize(n_targets);
+          tmp_sums[r].resize(n_targets);
           for (int64_t d = 0; d < n_targets; ++d) {
-            target_prime_sums[r][d] = express_as_prime_sum(static_cast<long>(odd_exponent_abs(target_n(r, d))));
-            for (int p : target_prime_sums[r][d]) all_primes.push_back(p);
+            tmp_sums[r][d] = express_as_prime_sum(static_cast<long>(odd_exponent_abs(target_n(r, d))));
+            for (int p : tmp_sums[r][d]) all_primes.push_back(p);
           }
         }
         std::sort(all_primes.begin(), all_primes.end());
         all_primes.erase(std::unique(all_primes.begin(), all_primes.end()), all_primes.end());
         primes = std::move(all_primes);
-        for (int r = 0; r < Rank; ++r)
-          for (int64_t d = 0; d < n_targets; ++d)
-            for (int &p : target_prime_sums[r][d]) p = static_cast<int>(std::find(primes.begin(), primes.end(), p) - primes.begin());
+        // Remap values to prime indices and flatten into contiguous storage
+        prime_digit_offsets.resize(Rank, n_targets + 1);
+        prime_digit_offsets = 0;
+        for (int r = 0; r < Rank; ++r) {
+          for (int64_t d = 0; d < n_targets; ++d) {
+            for (int &p : tmp_sums[r][d]) p = static_cast<int>(std::find(primes.begin(), primes.end(), p) - primes.begin());
+            prime_digits_flat[r].insert(prime_digits_flat[r].end(), tmp_sums[r][d].begin(), tmp_sums[r][d].end());
+            prime_digit_offsets(r, d + 1) = static_cast<int>(prime_digits_flat[r].size());
+          }
+        }
         for (int r = 0; r < Rank; ++r) prime_pow_tbl[r].resize(primes.size(), buf_size);
 
       } else if (type == nfft_type_t::automatic) {
@@ -238,17 +230,14 @@ namespace triqs::utility {
     std::array<long, Rank> n_min_arr{};
     std::array<long, Rank> n_range_arr{};
     mutable std::array<nda::array<dcomplex, 2>, Rank> pow_tbl; // (buf_size, n_range) per rank
-    std::vector<long> target_idx;                               // doubled offset indices for AoS gather
-
-    // Bitwise kernel: per-rank pow2 tables and bit lists
-    int num_pow2_levels_bitwise = 0;
-    std::array<nda::array<dcomplex, 2>, Rank> bitwise_pow2_tbl;
-    std::array<std::vector<std::vector<int>>, Rank> bitwise_pow2_bits;
+    nda::array<long, 2> target_idx;                              // (Rank, n_targets) doubled offset indices for AoS gather
 
     // Prime-sum kernel: per-rank prime decomposition tables
     std::vector<int> primes;
     std::array<nda::array<dcomplex, 2>, Rank> prime_pow_tbl;
-    std::array<std::vector<std::vector<int>>, Rank> target_prime_sums;
+    // Flattened per-rank prime index data (same layout as NAF digits).
+    std::array<std::vector<int>, Rank> prime_digits_flat;
+    nda::array<int, 2> prime_digit_offsets;                      // (Rank, n_targets+1)
 
     // NAF kernel: per-rank pow2 table and flattened signed digit lists
     int naf_num_pow2_levels = 0;
@@ -256,9 +245,9 @@ namespace triqs::utility {
     // Flattened per-rank digit data: all targets' digits stored contiguously.
     // Each digit is a row index; negative values encode conjugation: -(row+1).
     std::array<std::vector<int>, Rank> naf_digits_flat;
-    // naf_digit_offsets[r][d] = start index in naf_digits_flat[r] for target d.
-    // naf_digit_offsets[r][n_targets] = total number of digits.
-    std::array<std::vector<int>, Rank> naf_digit_offsets;
+    // naf_digit_offsets(r, d) = start index in naf_digits_flat[r] for target d.
+    // naf_digit_offsets(r, n_targets) = total number of digits.
+    nda::array<int, 2> naf_digit_offsets;                        // (Rank, n_targets+1)
 
     // Dispatch threshold for automatic mode: use direct_type3 (NAF) when
     // buf_counter * n_targets < threshold, otherwise fall back to FINUFFT type3.
@@ -286,16 +275,16 @@ namespace triqs::utility {
 
     void init_direct_naf(target_mf_vec const &target_mf_) {
       init_direct_common(target_mf_);
+      naf_digit_offsets.resize(Rank, n_targets + 1);
+      naf_digit_offsets = 0;
       unsigned long max_exponent = 0;
       for (int r = 0; r < Rank; ++r) {
-        naf_digit_offsets[r].resize(n_targets + 1);
-        naf_digit_offsets[r][0] = 0;
         for (int64_t d = 0; d < n_targets; ++d) {
           unsigned long exp = odd_exponent_abs(target_n(r, d));
           max_exponent      = std::max(max_exponent, exp);
           auto digits       = compute_naf(exp);
           naf_digits_flat[r].insert(naf_digits_flat[r].end(), digits.begin(), digits.end());
-          naf_digit_offsets[r][d + 1] = static_cast<int>(naf_digits_flat[r].size());
+          naf_digit_offsets(r, d + 1) = static_cast<int>(naf_digits_flat[r].size());
         }
       }
       naf_num_pow2_levels = std::max(1, static_cast<int>(std::bit_width(max_exponent)) + 1);
@@ -340,16 +329,55 @@ namespace triqs::utility {
     //   32 regs (AVX-512/NEON/SVE): n_acc=4-5 is zero-spill
     static constexpr int n_acc = std::clamp(simd_num_regs <= 16 ? 2 : 4, 2, 8);
 
+    // Constexpr DP table for optimal (minimum-term) prime-sum decompositions.
+    // best_summand[n] is the first summand to subtract; chase the chain to reconstruct.
+    static constexpr int max_precomputed_exp = 2048;
+    static constexpr auto prime_dp_table = [] {
+      std::array<uint16_t, max_precomputed_exp + 1> best{};
+      std::array<uint16_t, max_precomputed_exp + 1> dp{};
+      for (int i = 1; i <= max_precomputed_exp; ++i) dp[i] = 30000;
+
+      // Sieve primes, collect into flat array
+      std::array<bool, max_precomputed_exp + 1> sieve{};
+      for (int i = 2; i <= max_precomputed_exp; ++i) sieve[i] = true;
+      for (int i = 2; i * i <= max_precomputed_exp; ++i)
+        if (sieve[i])
+          for (int j = i * i; j <= max_precomputed_exp; j += i) sieve[j] = false;
+      std::array<uint16_t, 320> plist{}; // pi(2048) = 309
+      int np = 0;
+      for (int i = 2; i <= max_precomputed_exp; ++i)
+        if (sieve[i]) plist[np++] = static_cast<uint16_t>(i);
+
+      for (int n = 1; n <= max_precomputed_exp; ++n) {
+        if (dp[n - 1] + 1 < dp[n]) { dp[n] = static_cast<uint16_t>(dp[n - 1] + 1); best[n] = 1; }
+        for (int pi = 0; pi < np && plist[pi] <= n; ++pi) {
+          int p = plist[pi];
+          if (dp[n - p] + 1 < dp[n]) { dp[n] = static_cast<uint16_t>(dp[n - p] + 1); best[n] = static_cast<uint16_t>(p); }
+        }
+      }
+      return best;
+    }();
+
     static std::vector<int> express_as_prime_sum(long n) {
       std::vector<int> out;
-      while (n > 0) {
-        if (n == 1) { out.push_back(1); break; }
-        if (n <= 3) { out.push_back(static_cast<int>(n)); break; }
-        if (n == 4) { out.push_back(2); out.push_back(2); break; }
-        long p = n;
-        while (p > 1 && !is_prime(p)) --p;
-        out.push_back(static_cast<int>(p));
-        n -= p;
+      if (n <= max_precomputed_exp) {
+        // Optimal decomposition from precomputed DP table
+        while (n > 0) {
+          int p = prime_dp_table[n];
+          out.push_back(p);
+          n -= p;
+        }
+      } else {
+        // Greedy fallback for very large exponents
+        while (n > 0) {
+          if (n == 1) { out.push_back(1); break; }
+          if (n <= 3) { out.push_back(static_cast<int>(n)); break; }
+          if (n == 4) { out.push_back(2); out.push_back(2); break; }
+          long p = n;
+          while (p > 1 && !is_prime(p)) --p;
+          out.push_back(static_cast<int>(p));
+          n -= p;
+        }
       }
       return out;
     }
@@ -427,8 +455,6 @@ namespace triqs::utility {
         do_nfft_type3();
       else if (nfft_type == nfft_type_t::direct_type3)
         run_direct([this] { do_direct_naf(); });
-      else if (nfft_type == nfft_type_t::direct_bitwise)
-        run_direct([this] { do_direct_bitwise(); });
       else if (nfft_type == nfft_type_t::direct_prime)
         run_direct([this] { do_direct_prime(); });
       else
@@ -464,7 +490,7 @@ namespace triqs::utility {
       fiw_vec += fk_vec;
     }
 
-    // Build per-rank pow2 tables via sincos + repeated squaring (shared by bitwise & NAF kernels).
+    // Build per-rank pow2 tables via sincos + repeated squaring (used by NAF kernel).
     void build_pow2_tables(std::array<nda::array<dcomplex, 2>, Rank> &tbl_arr, int num_levels) {
       double const pi_over_beta = M_PI / beta;
       int64_t const stride      = buf_size;
@@ -486,32 +512,6 @@ namespace triqs::utility {
       });
     }
 
-    // Direct NUDFT via bitwise power-of-two decomposition.
-    // z = exp(i*pi*tau/beta), z^|2n+1| computed via binary exponentiation.
-    void do_direct_bitwise() {
-      int64_t const stride = buf_size;
-      dcomplex *fiw_ptr    = fk_vec.data();
-
-      build_pow2_tables(bitwise_pow2_tbl, num_pow2_levels_bitwise);
-
-      std::array<dcomplex const *, Rank> tbl_base;
-      poet::static_for<Rank>([&](const auto r) { tbl_base[r] = bitwise_pow2_tbl[r].data(); });
-
-      accumulate_targets_ilp<n_acc>(
-         n_targets, fiw_ptr,
-         [&](int64_t d, int j) -> cbatch {
-           cbatch pow_prod;
-           poet::static_for<Rank>([&](const auto r) {
-             auto const *base = tbl_base[r];
-             cbatch rank_pow(dcomplex{1.0, 0.0});
-             for (int k : bitwise_pow2_bits[r][d]) rank_pow *= cbatch::load_unaligned(base + k * stride + j);
-             rank_pow = target_n(r, d) < 0 ? xsimd::conj(rank_pow) : rank_pow;
-             pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
-           });
-           return pow_prod;
-         });
-    }
-
     // Direct NUDFT via prime-sum decomposition.
     // |2n+1| = p1+p2+... so z^|2n+1| = z^p1 * z^p2 * ..., sharing z^p across targets.
     void do_direct_prime() {
@@ -520,26 +520,31 @@ namespace triqs::utility {
       int const num_primes      = static_cast<int>(primes.size());
 
       // Build prime power table: prime_pow_tbl[r](p_idx, j) = z_r^prime
+      // Reuse fk_arr storage as scratch for z_vals (it's unused during direct kernels
+      // and has at least buf_size elements when Rank >= 1).
       poet::static_for<Rank>([&](const auto r) {
-        // Compute z_vals via SIMD sincos (padded)
-        nda::vector<dcomplex> z_vals(buf_counter_padded);
+        // Compute z_vals into first row of prime_pow_tbl (will be overwritten below)
+        // Use a temporary pointer to the first prime's row as z scratch
+        dcomplex *z_vals = &prime_pow_tbl[r](0, 0);
         for (int j = 0; j < buf_counter_padded; j += simd_size) {
           using rbatch            = xsimd::batch<double>;
           auto [sin_vec, cos_vec] = xsimd::sincos(rbatch::load_unaligned(&x_arr(r, j)) * pi_over_beta);
-          cbatch(cos_vec, sin_vec).store_unaligned(&z_vals[j]);
+          cbatch(cos_vec, sin_vec).store_unaligned(z_vals + j);
         }
 
-        for (int p_idx = 0; p_idx < num_primes; ++p_idx) {
+        // Build z^prime for each prime via binary exponentiation (highest prime first
+        // so we don't overwrite z_vals in row 0 before reading it).
+        for (int p_idx = num_primes - 1; p_idx >= 0; --p_idx) {
           int prime = primes[p_idx];
           if (prime == 1) {
-            for (int j = 0; j < buf_counter_padded; j += simd_size)
-              cbatch::load_unaligned(&z_vals[j]).store_unaligned(&prime_pow_tbl[r](p_idx, j));
+            if (p_idx != 0) // z_vals is already in row 0
+              for (int j = 0; j < buf_counter_padded; j += simd_size)
+                cbatch::load_unaligned(z_vals + j).store_unaligned(&prime_pow_tbl[r](p_idx, j));
             continue;
           }
-          // Binary exponentiation: z^prime (SIMD, no scalar tail needed)
           for (int j = 0; j < buf_counter_padded; j += simd_size) {
             cbatch result(dcomplex{1.0, 0.0});
-            cbatch base = cbatch::load_unaligned(&z_vals[j]);
+            cbatch base = cbatch::load_unaligned(z_vals + j);
             for (int exp = prime; exp > 0; exp >>= 1) {
               if (exp & 1) result *= base;
               base *= base;
@@ -553,8 +558,10 @@ namespace triqs::utility {
         [&](int64_t d, int j) -> cbatch {
           cbatch pow_prod;
           poet::static_for<Rank>([&](const auto r) {
+            int const *digits = prime_digits_flat[r].data() + prime_digit_offsets(r, d);
+            int n_digits      = prime_digit_offsets(r, d + 1) - prime_digit_offsets(r, d);
             cbatch rank_pow(dcomplex{1.0, 0.0});
-            for (int pi : target_prime_sums[r][d]) rank_pow *= cbatch::load_unaligned(&prime_pow_tbl[r](pi, j));
+            for (int i = 0; i < n_digits; ++i) rank_pow *= cbatch::load_unaligned(&prime_pow_tbl[r](digits[i], j));
             rank_pow = (target_n(r, d) < 0) ? xsimd::conj(rank_pow) : rank_pow;
             pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
           });
@@ -563,8 +570,8 @@ namespace triqs::utility {
     }
 
     // Rank-generic direct NUDFT via NAF (Non-Adjacent Form) decomposition.
-    // Uses the same power-of-two table as bitwise, but signed digits {-1,0,+1}
-    // reduce average non-zero count from L/2 to L/3. Conjugation for -1 digits is free.
+    // Signed digits {-1,0,+1} reduce average non-zero count from L/2 to L/3.
+    // Conjugation for -1 digits is free.
     void do_direct_naf() {
       int64_t const stride = buf_size;
       dcomplex *fiw_ptr    = fk_vec.data();
@@ -578,8 +585,8 @@ namespace triqs::utility {
       auto compute_simd_pow = [&](int64_t d, int j) -> cbatch {
         cbatch pow_prod;
         poet::static_for<Rank>([&](const auto r) {
-          int const *digits = naf_digits_flat[r].data() + naf_digit_offsets[r][d];
-          int n_digits      = naf_digit_offsets[r][d + 1] - naf_digit_offsets[r][d];
+          int const *digits = naf_digits_flat[r].data() + naf_digit_offsets(r, d);
+          int n_digits      = naf_digit_offsets(r, d + 1) - naf_digit_offsets(r, d);
           auto const *base  = tbl_base[r];
 
           int d0          = digits[0];
@@ -692,7 +699,7 @@ namespace triqs::utility {
 
       // Phase 2: Accumulate f(tau) * product_r(pow_tbl[r][j][idx[r][d]]) into output
       std::array<long const *, Rank> idx_ptr;
-      poet::static_for<0, Rank>([&](auto r) { idx_ptr[r] = target_idx.data() + r * n_targets; });
+      poet::static_for<0, Rank>([&](auto r) { idx_ptr[r] = &target_idx(r, 0); });
 
       for (int j = 0; j < buf_counter; ++j) {
         cbatch const fj(fx_arr[j]);

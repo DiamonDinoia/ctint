@@ -233,34 +233,6 @@ static void BM_Nfft_Rank1_DirectType1(benchmark::State &state) {
   }
 }
 
-static void BM_Nfft_Rank1_DirectBitwise(benchmark::State &state) {
-  auto &md         = get_mesh_data();
-  int64_t k        = state.range(0);
-  int64_t n_points = k;
-
-  nda::array<dcomplex, 1> output(md.n_un1);
-  output = 0;
-
-  nfft_buf_t<1> buf{output, md.target_mf_n1, buf_size, nfft_type_t::direct_bitwise};
-
-  std::mt19937 rng(42);
-  std::uniform_real_distribution<double> tau_dist(0.0, beta);
-  std::normal_distribution<double> val_dist(0.0, 1.0);
-
-  std::vector<double> taus(n_points);
-  std::vector<dcomplex> vals(n_points);
-  for (int64_t i = 0; i < n_points; ++i) {
-    taus[i] = tau_dist(rng);
-    vals[i] = dcomplex(val_dist(rng), val_dist(rng));
-  }
-
-  for (auto _ : state) {
-    output = 0;
-    for (int64_t i = 0; i < n_points; ++i) buf.push_back({taus[i]}, vals[i]);
-    buf.flush();
-  }
-}
-
 static void BM_Nfft_Rank2_DirectType1(benchmark::State &state) {
   auto &md         = get_mesh_data();
   int64_t k        = state.range(0);
@@ -357,34 +329,6 @@ static void BM_Nfft_M_iw_DirectType1(benchmark::State &state) {
   output = 0;
 
   nfft_buf_t<1> buf{output, dlr_md.target_mf, buf_size, nfft_type_t::direct_type1};
-
-  std::mt19937 rng(42);
-  std::uniform_real_distribution<double> tau_dist(0.0, beta);
-  std::normal_distribution<double> val_dist(0.0, 1.0);
-
-  std::vector<double> taus(n_points);
-  std::vector<dcomplex> vals(n_points);
-  for (int64_t i = 0; i < n_points; ++i) {
-    taus[i] = tau_dist(rng);
-    vals[i] = dcomplex(val_dist(rng), val_dist(rng));
-  }
-
-  for (auto _ : state) {
-    output = 0;
-    for (int64_t i = 0; i < n_points; ++i) buf.push_back({taus[i]}, vals[i]);
-    buf.flush();
-  }
-}
-
-static void BM_Nfft_M_iw_DirectBitwise(benchmark::State &state) {
-  auto &dlr_md     = get_dlr_mesh_data();
-  int64_t k        = state.range(0);
-  int64_t n_points = k;
-
-  nda::array<dcomplex, 1> output(dlr_md.n_dlr_pts);
-  output = 0;
-
-  nfft_buf_t<1> buf{output, dlr_md.target_mf, buf_size, nfft_type_t::direct_bitwise};
 
   std::mt19937 rng(42);
   std::uniform_real_distribution<double> tau_dist(0.0, beta);
@@ -533,7 +477,6 @@ static void BM_Nfft_M4_iw_Type1(benchmark::State &state) {
 BENCHMARK(BM_Nfft_Rank1_Type1)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_Rank1_Type3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_Rank1_DirectType1)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
-BENCHMARK(BM_Nfft_Rank1_DirectBitwise)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_Rank1_DirectType3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_Rank2_Type1)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_Rank2_Type3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
@@ -544,7 +487,6 @@ BENCHMARK(BM_Nfft_Rank2_DirectType3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 // M_iw pattern (pure DLR mesh)
 BENCHMARK(BM_Nfft_M_iw_Type3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_M_iw_DirectType1)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
-BENCHMARK(BM_Nfft_M_iw_DirectBitwise)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 BENCHMARK(BM_Nfft_M_iw_DirectType3)->Arg(16)->Arg(64)->Arg(256)->Arg(1024);
 
 // M4_iw pattern (rectangular uniform grid) - Args: {k, n_iw_M4}
