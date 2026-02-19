@@ -557,57 +557,101 @@ namespace triqs::utility {
     // |2n+1| = p1+p2+... so z^|2n+1| = z^p1 * z^p2 * ..., sharing z^p across targets.
     void do_direct_prime() {
       double const pi_over_beta = M_PI / beta;
+      int64_t const stride      = buf_size;
       dcomplex *fiw_ptr         = fk_vec.data();
       int const num_primes      = static_cast<int>(primes.size());
 
       // Build prime power table: prime_pow_tbl[r](p_idx, j) = z_r^prime
-      // Reuse fk_arr storage as scratch for z_vals (it's unused during direct kernels
-      // and has at least buf_size elements when Rank >= 1).
+      // Chain from previous prime: z^primes[i] = z^primes[i-1] * z^gap, where gap
+      // is typically 2 (twin primes), so most entries cost a single multiply.
       poet::static_for<Rank>([&](const auto r) {
-        // Compute z_vals into first row of prime_pow_tbl (will be overwritten below)
-        // Use a temporary pointer to the first prime's row as z scratch
-        dcomplex *z_vals = &prime_pow_tbl[r](0, 0);
+        dcomplex *tbl = prime_pow_tbl[r].data();
+
+        // Row 0: z = exp(i*pi*tau/beta) via SIMD sincos
         for (int j = 0; j < buf_counter_padded; j += simd_size) {
           using rbatch            = xsimd::batch<double>;
           auto [sin_vec, cos_vec] = xsimd::sincos(rbatch::load_unaligned(&x_arr(r, j)) * pi_over_beta);
-          cbatch(cos_vec, sin_vec).store_unaligned(z_vals + j);
+          cbatch(cos_vec, sin_vec).store_unaligned(tbl + j);
         }
 
-        // Build z^prime for each prime via binary exponentiation (highest prime first
-        // so we don't overwrite z_vals in row 0 before reading it).
-        for (int p_idx = num_primes - 1; p_idx >= 0; --p_idx) {
+        // Build z^prime for each prime by chaining from the previous prime's row.
+        // When primes[0]==1, row 0 already holds z = z^1, so we start from p_idx=1.
+        // z^primes[i] = z^primes[i-1] * z^(primes[i] - primes[i-1])
+        // The gap exponentiation uses z (row 0) as base with binary exp.
+        for (int p_idx = (primes[0] == 1) ? 1 : 0; p_idx < num_primes; ++p_idx) {
           int prime = primes[p_idx];
-          if (prime == 1) {
-            if (p_idx != 0) // z_vals is already in row 0
-              for (int j = 0; j < buf_counter_padded; j += simd_size)
-                cbatch::load_unaligned(z_vals + j).store_unaligned(&prime_pow_tbl[r](p_idx, j));
-            continue;
-          }
-          for (int j = 0; j < buf_counter_padded; j += simd_size) {
-            cbatch result(dcomplex{1.0, 0.0});
-            cbatch base = cbatch::load_unaligned(z_vals + j);
-            for (int exp = prime; exp > 0; exp >>= 1) {
-              if (exp & 1) result *= base;
-              base *= base;
+          if (p_idx == 0 || primes[p_idx - 1] == 1) {
+            // No useful predecessor: binary exp from z (row 0)
+            for (int j = 0; j < buf_counter_padded; j += simd_size) {
+              cbatch result(dcomplex{1.0, 0.0});
+              cbatch base = cbatch::load_unaligned(tbl + j);
+              for (int exp = prime; exp > 0; exp >>= 1) {
+                if (exp & 1) result *= base;
+                base *= base;
+              }
+              result.store_unaligned(tbl + p_idx * stride + j);
             }
-            result.store_unaligned(&prime_pow_tbl[r](p_idx, j));
+          } else {
+            int gap = prime - primes[p_idx - 1];
+            dcomplex const *prev_row = tbl + (p_idx - 1) * stride;
+            if (gap == 1) {
+              // z^p = z^(p-1) * z
+              for (int j = 0; j < buf_counter_padded; j += simd_size)
+                (cbatch::load_unaligned(prev_row + j) * cbatch::load_unaligned(tbl + j)).store_unaligned(tbl + p_idx * stride + j);
+            } else if (gap == 2) {
+              // z^p = z^(p-2) * z^2: compute z^2 inline (z*z)
+              for (int j = 0; j < buf_counter_padded; j += simd_size) {
+                cbatch z = cbatch::load_unaligned(tbl + j);
+                (cbatch::load_unaligned(prev_row + j) * z * z).store_unaligned(tbl + p_idx * stride + j);
+              }
+            } else {
+              // General gap: binary exp of gap using z (row 0), multiply with prev
+              for (int j = 0; j < buf_counter_padded; j += simd_size) {
+                cbatch result(dcomplex{1.0, 0.0});
+                cbatch base = cbatch::load_unaligned(tbl + j);
+                for (int exp = gap; exp > 0; exp >>= 1) {
+                  if (exp & 1) result *= base;
+                  base *= base;
+                }
+                (cbatch::load_unaligned(prev_row + j) * result).store_unaligned(tbl + p_idx * stride + j);
+              }
+            }
           }
         }
       });
 
-      accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr,
-        [&](int64_t d, int j) -> cbatch {
-          cbatch pow_prod;
-          poet::static_for<Rank>([&](const auto r) {
-            int const *digits = prime_digits_flat[r].data() + prime_digit_offsets(r, d);
-            int n_digits      = prime_digit_offsets(r, d + 1) - prime_digit_offsets(r, d);
-            cbatch rank_pow(dcomplex{1.0, 0.0});
-            for (int i = 0; i < n_digits; ++i) rank_pow *= cbatch::load_unaligned(&prime_pow_tbl[r](digits[i], j));
-            rank_pow = (target_n(r, d) < 0) ? xsimd::conj(rank_pow) : rank_pow;
-            pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
-          });
-          return pow_prod;
+      // Accumulation with source blocking (same strategy as NAF kernel).
+      std::array<dcomplex const *, Rank> tbl_base;
+      poet::static_for<Rank>([&](const auto r) { tbl_base[r] = prime_pow_tbl[r].data(); });
+
+      auto compute_simd_pow = [&](int64_t d, int j) -> cbatch {
+        cbatch pow_prod;
+        poet::static_for<Rank>([&](const auto r) {
+          int const *digits = prime_digits_flat[r].data() + prime_digit_offsets(r, d);
+          int n_digits      = prime_digit_offsets(r, d + 1) - prime_digit_offsets(r, d);
+          auto const *base  = tbl_base[r];
+
+          cbatch rank_pow = cbatch::load_unaligned(base + digits[0] * stride + j);
+          for (int i = 1; i < n_digits; ++i) rank_pow *= cbatch::load_unaligned(base + digits[i] * stride + j);
+
+          rank_pow = (target_n(r, d) < 0) ? xsimd::conj(rank_pow) : rank_pow;
+          pow_prod = (r == 0) ? rank_pow : pow_prod * rank_pow;
         });
+        return pow_prod;
+      };
+
+      constexpr int64_t l2_bytes           = 2 * 1024 * 1024;
+      int64_t const table_bytes_per_source = Rank * num_primes * static_cast<int64_t>(sizeof(dcomplex));
+      bool const use_blocking              = buf_counter_padded * table_bytes_per_source > l2_bytes;
+
+      if (use_blocking) {
+        constexpr int source_block = 128;
+        for (int jb = 0; jb < buf_counter_padded; jb += source_block)
+          accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr, compute_simd_pow,
+                                        jb, std::min(jb + source_block, buf_counter_padded));
+      } else {
+        accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr, compute_simd_pow);
+      }
     }
 
     // Rank-generic direct NUDFT via NAF (Non-Adjacent Form) decomposition.
