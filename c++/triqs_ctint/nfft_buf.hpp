@@ -129,6 +129,41 @@ namespace triqs::utility {
         init_type3(target_mf_);
         init_direct_naf(target_mf_);
 
+        // For Rank >= 2, also prepare prime kernel and pick the one with fewer total digits.
+        if constexpr (Rank >= 2) {
+          // Init prime decomposition (same logic as direct_prime branch)
+          std::vector<int> all_primes;
+          std::array<std::vector<std::vector<int>>, Rank> tmp_sums;
+          for (int r = 0; r < Rank; ++r) {
+            tmp_sums[r].resize(n_targets);
+            for (int64_t d = 0; d < n_targets; ++d) {
+              tmp_sums[r][d] = express_as_prime_sum(static_cast<long>(odd_exponent_abs(target_n(r, d))));
+              for (int p : tmp_sums[r][d]) all_primes.push_back(p);
+            }
+          }
+          std::sort(all_primes.begin(), all_primes.end());
+          all_primes.erase(std::unique(all_primes.begin(), all_primes.end()), all_primes.end());
+          primes = std::move(all_primes);
+          prime_digit_offsets.resize(Rank, n_targets + 1);
+          prime_digit_offsets = 0;
+          for (int r = 0; r < Rank; ++r) {
+            for (int64_t d = 0; d < n_targets; ++d) {
+              for (int &p : tmp_sums[r][d]) p = static_cast<int>(std::find(primes.begin(), primes.end(), p) - primes.begin());
+              prime_digits_flat[r].insert(prime_digits_flat[r].end(), tmp_sums[r][d].begin(), tmp_sums[r][d].end());
+              prime_digit_offsets(r, d + 1) = static_cast<int>(prime_digits_flat[r].size());
+            }
+          }
+          for (int r = 0; r < Rank; ++r) prime_pow_tbl[r].resize(primes.size(), buf_size);
+
+          // Compare total digit counts: pick whichever has fewer
+          int64_t total_naf = 0, total_prime = 0;
+          for (int r = 0; r < Rank; ++r) {
+            total_naf   += static_cast<int64_t>(naf_digits_flat[r].size());
+            total_prime += static_cast<int64_t>(prime_digits_flat[r].size());
+          }
+          use_prime_direct = (total_prime < total_naf);
+        }
+
       } else {
         NDA_RUNTIME_ERROR << "nfft_buf_t: unsupported nfft_type_t for non-uniform target constructor\n";
       }
@@ -252,6 +287,9 @@ namespace triqs::utility {
     // Dispatch threshold for automatic mode: use direct_type3 (NAF) when
     // buf_counter * n_targets < threshold, otherwise fall back to FINUFFT type3.
     static constexpr int64_t dispatch_threshold = 50'000'000;
+
+    // For Rank >= 2 automatic mode: true if prime kernel has fewer total digits than NAF.
+    bool use_prime_direct = false;
 
     using target_mf_vec = std::vector<std::array<mesh::matsubara_freq, Rank>>;
 
@@ -402,10 +440,13 @@ namespace triqs::utility {
     // Sources are zero-padded to buf_counter_padded, so no scalar tail is needed.
     template <int n_acc, typename SimdPowFunc>
     [[gnu::always_inline]] inline void accumulate_targets_ilp(int64_t n_targets_total, dcomplex *fiw_ptr,
-                                                               SimdPowFunc &&compute_simd_pow) {
+                                                               SimdPowFunc &&compute_simd_pow,
+                                                               int j_begin = 0, int j_end = -1) {
+      if (j_end < 0) j_end = buf_counter_padded;
+
       auto accumulate_one = [&](int64_t d) {
         cbatch sum_vec(dcomplex{0, 0});
-        for (int j = 0; j < buf_counter_padded; j += simd_size)
+        for (int j = j_begin; j < j_end; j += simd_size)
           sum_vec = xsimd::fma(cbatch::load_unaligned(fx_arr.data() + j), compute_simd_pow(d, j), sum_vec);
         fiw_ptr[d] += xsimd::reduce_add(sum_vec);
       };
@@ -417,7 +458,7 @@ namespace triqs::utility {
         std::array<cbatch, n_acc> sum_vecs;
         poet::static_for<n_acc>([&](const auto i) { sum_vecs[i] = cbatch(dcomplex{0, 0}); });
 
-        for (int j = 0; j < buf_counter_padded; j += simd_size) {
+        for (int j = j_begin; j < j_end; j += simd_size) {
           cbatch fj = cbatch::load_unaligned(fx_arr.data() + j);
           poet::static_for<n_acc>([&](const auto i) {
             sum_vecs[i] = xsimd::fma(fj, compute_simd_pow(d + i, j), sum_vecs[i]);
@@ -448,7 +489,7 @@ namespace triqs::utility {
         do_nfft_type1();
       else if (nfft_type == nfft_type_t::automatic) {
         if (static_cast<int64_t>(buf_counter) * n_targets < dispatch_threshold)
-          run_direct([this] { do_direct_naf(); });
+          run_direct([this] { use_prime_direct ? do_direct_prime() : do_direct_naf(); });
         else
           do_nfft_type3();
       } else if (nfft_type == nfft_type_t::type3)
@@ -615,31 +656,10 @@ namespace triqs::utility {
       if (use_blocking) {
         // Source-blocked: process sources in L1-sized blocks, iterating over all
         // targets per block so table data stays in L1 across target iterations.
-        constexpr int source_block   = 128;
-        int64_t const n_targets_main = (n_targets / n_acc) * n_acc;
-
-        for (int jb = 0; jb < buf_counter_padded; jb += source_block) {
-          int const j_end = std::min(jb + source_block, buf_counter_padded);
-
-          int64_t d = 0;
-          for (; d < n_targets_main; d += n_acc) {
-            std::array<cbatch, n_acc> local_sums;
-            poet::static_for<n_acc>([&](const auto i) { local_sums[i] = cbatch(dcomplex{0, 0}); });
-
-            for (int j = jb; j < j_end; j += simd_size) {
-              cbatch fj = cbatch::load_unaligned(fx_arr.data() + j);
-              poet::static_for<n_acc>([&](const auto i) { local_sums[i] = xsimd::fma(fj, compute_simd_pow(d + i, j), local_sums[i]); });
-            }
-
-            poet::static_for<n_acc>([&](const auto i) { fiw_ptr[d + i] += xsimd::reduce_add(local_sums[i]); });
-          }
-          for (; d < n_targets; ++d) {
-            cbatch local_sum(dcomplex{0, 0});
-            for (int j = jb; j < j_end; j += simd_size)
-              local_sum = xsimd::fma(cbatch::load_unaligned(fx_arr.data() + j), compute_simd_pow(d, j), local_sum);
-            fiw_ptr[d] += xsimd::reduce_add(local_sum);
-          }
-        }
+        constexpr int source_block = 128;
+        for (int jb = 0; jb < buf_counter_padded; jb += source_block)
+          accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr, compute_simd_pow,
+                                        jb, std::min(jb + source_block, buf_counter_padded));
       } else {
         accumulate_targets_ilp<n_acc>(n_targets, fiw_ptr, compute_simd_pow);
       }
