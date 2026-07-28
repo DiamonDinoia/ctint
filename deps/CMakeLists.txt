@@ -56,6 +56,31 @@ if(PythonSupport)
   )
 endif()
 
+# -- finufft + poet (nfft consumers) --
+# triqs' nfft headers are header-only and pull in finufft.h/xsimd/poet, and libtriqs does
+# not re-export them (see triqs c++/triqs/CMakeLists.txt). ctint instantiates those
+# templates (M3/M4 measures) and uses xsimd/poet directly in iw_accumulate.hpp, so it must
+# supply the deps itself. xsimd comes transitively from finufft's own CPM setup.
+set(FINUFFT_USE_OPENMP OFF)
+set(FINUFFT_USE_DUCC0 ON)
+set(FINUFFT_INTERPROCEDURAL_OPTIMIZATION ON)
+set(FINUFFT_ARCH_FLAGS "")
+external_dependency(finufft
+  GIT_REPO https://github.com/diamondinoia/finufft
+  GIT_TAG experimental
+  BUILD_ALWAYS
+  EXCLUDE_FROM_ALL
+)
+
+set(POET_BUILD_TESTS OFF CACHE BOOL "" FORCE)  # else poet follows BUILD_TESTING and pulls gtest via CPM
+set(POET_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+external_dependency(poet
+  GIT_REPO https://github.com/DiamonDinoia/poet
+  GIT_TAG v0.0.0
+  BUILD_ALWAYS
+  EXCLUDE_FROM_ALL
+)
+
 # -- GTest --
 external_dependency(GTest
   GIT_REPO https://github.com/google/googletest

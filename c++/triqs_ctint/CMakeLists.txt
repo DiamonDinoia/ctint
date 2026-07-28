@@ -8,11 +8,13 @@ function(add_ctint_library TARGET_NAME)
   add_library(${TARGET_NAME} ${sources})
   add_library(${PROJECT_NAME}::${TARGET_NAME} ALIAS ${TARGET_NAME})
 
-  # Link against triqs and enable warnings
-  # finufft, xsimd, poet come transitively through triqs (TRIQS_WITH_NFFT)
+  # Link against triqs and enable warnings.
+  # triqs does not re-export the nfft header deps, so ctint supplies finufft/xsimd/poet
+  # itself: they are needed to compile the nfft-consuming measures and iw_accumulate.hpp.
   target_link_libraries(${TARGET_NAME}
     PUBLIC
       triqs
+      $<BUILD_INTERFACE:finufft> $<BUILD_INTERFACE:xsimd> $<BUILD_INTERFACE:poet::poet>
       $<BUILD_INTERFACE:${PROJECT_NAME}_performance_flags>
     PRIVATE
       $<BUILD_INTERFACE:${PROJECT_NAME}_warnings>
