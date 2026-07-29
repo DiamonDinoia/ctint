@@ -10,7 +10,7 @@ function(add_ctint_library TARGET_NAME)
 
   # Link against triqs and enable warnings.
   # triqs does not re-export the nfft header deps, so ctint supplies finufft/xsimd/poet
-  # itself: they are needed to compile the nfft-consuming measures and iw_accumulate.hpp.
+  # itself: they are needed to compile the nfft-consuming measures and iw_simd.hpp.
   target_link_libraries(${TARGET_NAME}
     PUBLIC
       triqs
