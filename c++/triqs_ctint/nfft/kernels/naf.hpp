@@ -11,13 +11,18 @@
 
 namespace triqs::utility::nfft {
 
-  // NAF writes e = |2n + 1| as a sparse signed binary sum
+  // For each rank, NAF writes the unique absolute target exponents
+  // e = |2n + 1| as sparse signed binary sums
   //
   //   e = Σ_k ε_k 2^k,   ε_k in {-1, 0, 1},
   //
   // with no adjacent nonzero digits. Example: 13 = 16 - 4 + 1.
-  // Then z^e is rebuilt from the shared powers z^(2^k); ε_k = -1 means use
-  // conj(z^(2^k)). Negative Matsubara indices only add a final conjugation.
+  //
+  // During evaluation, build the shared powers z^(2^k) by repeated squaring
+  // from z^1. Because z = exp(i theta) lies on the unit circle,
+  // conj(z^(2^k)) = z^(-2^k), so digit ε_k = -1 means multiply by
+  // conj(z^(2^k)) while reconstructing z^e. Negative Matsubara indices add one
+  // more final conjugation after z^|2n+1| has been reconstructed.
   template <int Rank> struct kernel_naf_t {
 
     kernel_naf_t() = default;
@@ -32,7 +37,9 @@ namespace triqs::utility::nfft {
           unsigned long exp   = odd_exponent_abs(state.target_n(r, d));
           auto [it, inserted] = exp_to_idx.try_emplace(exp, static_cast<int>(exp_to_idx.size()));
           if (inserted) {
-            // Store the NAF digits once per unique exponent as (row, sign) pairs.
+            // Store the NAF digits once per unique exponent as flattened
+            // (row, sign) pairs. `digit_offsets[r][u]..digit_offsets[r][u+1]`
+            // is the slice for unique exponent `u`.
             auto digits = compute_naf(exp);
             digit_offsets[r].push_back(static_cast<int>(digit_row_flat[r].size() + digits.size()));
             for (int digit : digits) {
@@ -46,6 +53,8 @@ namespace triqs::utility::nfft {
           target_map[d * Rank + r] = 2 * it->second + (needs_conj ? 1 : 0);
         }
         n_unique[r]         = static_cast<int>(exp_to_idx.size());
+        // Depth is "highest referenced NAF row + 1". This can exceed
+        // floor(log2(e)) for the original exponent, e.g. 13 = 16 - 4 + 1.
         num_pow2_levels[r]  = std::max(1, max_digit_row + 1);
         simd_pow2_tbl[r].resize(num_pow2_levels[r]);
         scalar_pow2_tbl[r].resize(num_pow2_levels[r]);
@@ -97,7 +106,9 @@ namespace triqs::utility::nfft {
     std::array<std::vector<cbatch>, Rank> simd_pow2_tbl;
     std::array<std::vector<dcomplex>, Rank> scalar_pow2_tbl;
 
-    // Per-rank unique-exponent metadata for the NAF expansion.
+    // Per-rank unique-exponent metadata for the NAF expansion. The flattened
+    // slices `digit_offsets[u]..digit_offsets[u+1]` describe one unique
+    // absolute exponent at a time.
     std::array<int, Rank> n_unique{};
     std::array<std::vector<uint16_t>, Rank> digit_row_flat;
     std::array<std::vector<uint8_t>, Rank> digit_neg_flat;
@@ -105,6 +116,8 @@ namespace triqs::utility::nfft {
 
     // Target -> unique exponent lookup. For each rank:
     //   info = 2 * unique_id + needs_conj.
+    // The digit-level NAF signs have already been folded into the unique
+    // exponent value; `needs_conj` only handles a negative Matsubara index.
     std::vector<int> target_map;
 
     // Temporary per-flush work buffers.
@@ -165,7 +178,7 @@ namespace triqs::utility::nfft {
       };
       if constexpr (Rank == 1) {
         cbatch *__restrict__ sp = sums_buf.data();
-        poet::dynamic_for<ilp_unroll, 1>(int64_t{0}, n_tgt, [&](int64_t d) {
+        poet::dynamic_for<ilp_unroll>(int64_t{0}, n_tgt, [&](int64_t d) {
           // Rank 1 is just a gather from the unique-exponent table.
           sp[d] = xsimd::fma(fj, load_target(uq0, map_ptr[d]), sp[d]);
         });

@@ -14,6 +14,24 @@ static_assert(sizeof(int) >= sizeof(int32_t), " Error: sizeof(int) < 4 Byte ");
 // Tolerance for FINUFFT in tests: tighter than the default 1e-8 to allow 1e-10 comparison thresholds
 constexpr double test_tol = 1e-12;
 
+namespace {
+
+unsigned long decode_naf_digits(std::vector<int> const &digits) {
+  unsigned long plus_sum  = 0;
+  unsigned long minus_sum = 0;
+  for (int digit : digits) {
+    int const k              = digit >= 0 ? digit : -(digit + 1);
+    unsigned long const term = 1UL << k;
+    if (digit >= 0)
+      plus_sum += term;
+    else
+      minus_sum += term;
+  }
+  return plus_sum - minus_sum;
+}
+
+} // namespace
+
 /********************* Fixture Common to all TEST_F ********************/
 class Nfft : public ::testing::Test {
 
@@ -38,6 +56,27 @@ class Nfft : public ::testing::Test {
   // function to be transformed
   double f_tau(double tau) { return -std::exp(-tau) / (1 + std::exp(-beta)); } // bosonic: std::exp(-tau) (std::exp(-beta) - 1)
 };
+
+TEST(NfftHelpers, ComputeNaf_Invariants) {
+  std::vector<unsigned long> exponents = {0, 1, 3, 5, 7, 9, 13, 15, 31, 127, 1501};
+  for (unsigned long exp : exponents) {
+    auto digits = compute_naf(exp);
+    EXPECT_EQ(decode_naf_digits(digits), exp) << "Failed to reconstruct exponent " << exp;
+    if (exp == 0) {
+      EXPECT_TRUE(digits.empty());
+      continue;
+    }
+
+    ASSERT_FALSE(digits.empty()) << "Positive exponent " << exp << " must have at least one NAF digit";
+    int prev_k = -2;
+    for (int digit : digits) {
+      int const k = digit >= 0 ? digit : -(digit + 1);
+      EXPECT_GT(k, prev_k) << "Digits must be stored in increasing bit order for exponent " << exp;
+      EXPECT_NE(k, prev_k + 1) << "Exponent " << exp << " has adjacent nonzero NAF digits";
+      prev_k = k;
+    }
+  }
+}
 
 /********************* EQUIDISTANT TRANSFORM ********************/
 TEST_F(Nfft, Equid) { // NOLINT
@@ -814,6 +853,55 @@ void run_direct_vs_type3_2d(type_t direct_type, double beta) {
 TEST_F(Nfft, DirectType1_vs_Type3_2D) { run_direct_vs_type3_2d(type_t::direct_type1, beta); }
 TEST_F(Nfft, DirectChain_vs_Type3_2D) { run_direct_vs_type3_2d(type_t::direct_chain, beta); }
 TEST_F(Nfft, DirectType3_vs_Type3_2D) { run_direct_vs_type3_2d(type_t::direct_type3, beta); }
+
+/********************* DIRECT vs TYPE 3: Consistency 3D ********************/
+void run_direct_vs_type3_3d(type_t direct_type, double beta) {
+
+  int small_niw = 4;
+  int n_tau     = 2500;
+  int buf_size  = n_tau;
+
+  std::default_random_engine gen(2323);
+  std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+  int64_t n_per_dim = 2 * small_niw;
+  int64_t n_targets = n_per_dim * n_per_dim * n_per_dim;
+  std::vector<std::array<mesh::matsubara_freq, 3>> target_mf;
+  target_mf.reserve(n_targets);
+  for (int64_t k1 = 0; k1 < n_per_dim; ++k1)
+    for (int64_t k2 = 0; k2 < n_per_dim; ++k2)
+      for (int64_t k3 = 0; k3 < n_per_dim; ++k3) {
+        int n1 = static_cast<int>(k1) - small_niw;
+        int n2 = static_cast<int>(k2) - small_niw;
+        int n3 = static_cast<int>(k3) - small_niw;
+        target_mf.push_back({mesh::matsubara_freq(n1, beta, mesh::Fermion), mesh::matsubara_freq(n2, beta, mesh::Fermion),
+                             mesh::matsubara_freq(n3, beta, mesh::Fermion)});
+      }
+
+  nda::vector<dcomplex> fiw_type3(n_targets);
+  fiw_type3 = 0;
+  buffer_t<3> buf3(fiw_type3, target_mf, buf_size, test_tol, type_t::type3);
+
+  nda::vector<dcomplex> fiw_direct(n_targets);
+  fiw_direct = 0;
+  buffer_t<3> bufd(fiw_direct, target_mf, buf_size, test_tol, direct_type);
+
+  for (int i = 0; i < n_tau; ++i) {
+    double tau1 = dist(gen) * beta;
+    double tau2 = dist(gen) * beta;
+    double tau3 = dist(gen) * beta;
+    dcomplex fv = dcomplex(dist(gen) - 0.5, dist(gen) - 0.5);
+    buf3.push_back({tau1, tau2, tau3}, fv);
+    bufd.push_back({tau1, tau2, tau3}, fv);
+  }
+  buf3.flush();
+  bufd.flush();
+
+  for (int64_t k = 0; k < n_targets; ++k) { EXPECT_LT(std::abs(fiw_type3(k) - fiw_direct(k)), 1e-9); }
+}
+
+TEST_F(Nfft, DirectChain_vs_Type3_3D) { run_direct_vs_type3_3d(type_t::direct_chain, beta); }
+TEST_F(Nfft, DirectType3_vs_Type3_3D) { run_direct_vs_type3_3d(type_t::direct_type3, beta); }
 
 /********************* STRIDED OUTPUT: Direct vs Type3 with strided view ********************/
 // Reproduces the M_iw.cpp pattern: output is a strided slice of a 3D array.

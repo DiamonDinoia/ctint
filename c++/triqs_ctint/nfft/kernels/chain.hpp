@@ -7,26 +7,31 @@
 #include "../common.hpp"
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 
 namespace triqs::utility::nfft {
 
-  // Chain kernel for odd Matsubara exponents e = |2n + 1|.
-  // For each rank, keep only the unique exponents and build them from z^1 by
-  // repeatedly combining rows that are already available. If e = a + b or
-  // e = a - b, then
+  // Greedy addition/subtraction-chain kernel for fermionic target exponents
+  // e_target = |2n + 1|. For each rank, deduplicate the absolute target
+  // exponents, plan them once from z^1, and keep the sign of `n` only as a
+  // final conjugation bit in `target_map`.
   //
-  //   z^e = z^a z^b,     z^{a-b} = z^a conj(z^b).
+  // The requested targets are odd, but the planner may introduce even or odd
+  // helper rows. Because z = exp(i theta) lies on the unit circle,
   //
-  // So the planner searches for a short addition/subtraction chain for the
-  // required exponents. Negative Matsubara indices only add a final conjugation.
+  //   z^{a+b} = z^a z^b,     z^{a-b} = z^a conj(z^b)   (for a > b).
+  //
+  // So the planner builds a greedy addition/subtraction chain for the required
+  // exponents. Negative Matsubara indices only add a final conjugation.
   template <int Rank> struct kernel_chain_t {
 
     kernel_chain_t() = default;
 
     kernel_chain_t(shared_state_t<Rank> const &state) {
-      // Build a shared addition/subtraction plan over the unique exponents per
-      // rank and reuse those rows across all targets.
+      // Build one shared plan per rank over the unique absolute exponents, then
+      // reuse those rows across all targets. Negative Matsubara frequencies
+      // only flip the final `needs_conj` bit below.
       target_map.resize(state.n_targets * Rank);
       std::array<std::vector<int>, Rank> row_indices_by_rank;
       int total_unique_entries = 0;
@@ -47,7 +52,7 @@ namespace triqs::utility::nfft {
 
         std::vector<unsigned long> unique_exponents(n_unique[r]);
         for (auto const &[exp, u] : exp_to_unique) unique_exponents[u] = exp;
-        // Plan how to synthesize every required odd exponent from a short chain.
+        // Plan how to synthesize every required target exponent from the shared greedy chain.
         plans_[r] = build_rank_plan(unique_exponents);
 
         row_indices_by_rank[r].resize(n_unique[r]);
@@ -123,8 +128,11 @@ namespace triqs::utility::nfft {
     };
 
     struct rank_plan_t {
-      // row_exp[0] = 1. Each later row is synthesized from two earlier rows:
-      //   row_exp[k+1] = row_exp[lhs] +/- row_exp[rhs].
+      // row_exp[0] = 1. Each later row is synthesized from two earlier rows
+      // using either a sum or a positive difference:
+      //   row_exp[k+1] = row_exp[lhs] + row_exp[rhs],
+      //   row_exp[k+1] = row_exp[lhs] - row_exp[rhs]   (lhs > rhs).
+      // Helper rows need not themselves be required target exponents.
       std::vector<unsigned long> row_exp;
       std::vector<op_t> ops;
       std::vector<int> required_row_idx;
@@ -170,8 +178,47 @@ namespace triqs::utility::nfft {
     // Used to choose the size of the synthesized source block for Rank 1.
     int64_t table_bytes_per_source_ = 0;
 
-    // Greedy planner: add reachable required exponents first, otherwise add the helper
-    // that unlocks the most missing exponents.
+    static void validate_rank_plan(rank_plan_t const &plan, std::vector<unsigned long> const &required_exponents) {
+      if (required_exponents.empty()) {
+        if (!plan.row_exp.empty() || !plan.ops.empty() || !plan.required_row_idx.empty())
+          NDA_RUNTIME_ERROR << "kernel_chain_t: empty requirement set produced a non-empty plan\n";
+        return;
+      }
+
+      if (plan.row_exp.empty() || plan.row_exp.front() != 1UL) NDA_RUNTIME_ERROR << "kernel_chain_t: row 0 must be exponent 1\n";
+      if (plan.ops.size() + 1 != plan.row_exp.size()) NDA_RUNTIME_ERROR << "kernel_chain_t: row/op count mismatch in synthesized plan\n";
+      if (plan.required_row_idx.size() != required_exponents.size())
+        NDA_RUNTIME_ERROR << "kernel_chain_t: required-row mapping size mismatch\n";
+
+      for (std::size_t op_idx = 0; op_idx < plan.ops.size(); ++op_idx) {
+        int const out_row = static_cast<int>(op_idx) + 1;
+        auto const &op    = plan.ops[op_idx];
+        if (op.lhs < 0 || op.rhs < 0 || op.lhs >= out_row || op.rhs >= out_row)
+          NDA_RUNTIME_ERROR << "kernel_chain_t: plan op references a row that is not available yet\n";
+
+        unsigned long const lhs_exp = plan.row_exp[op.lhs];
+        unsigned long const rhs_exp = plan.row_exp[op.rhs];
+        unsigned long const actual  = plan.row_exp[out_row];
+        if (op.subtract_rhs) {
+          if (lhs_exp <= rhs_exp) NDA_RUNTIME_ERROR << "kernel_chain_t: subtraction rows must form a positive difference\n";
+          if (lhs_exp - rhs_exp != actual) NDA_RUNTIME_ERROR << "kernel_chain_t: subtraction row does not match its recorded exponent\n";
+        } else if (lhs_exp + rhs_exp != actual) {
+          NDA_RUNTIME_ERROR << "kernel_chain_t: sum row does not match its recorded exponent\n";
+        }
+      }
+
+      for (std::size_t u = 0; u < required_exponents.size(); ++u) {
+        int const row = plan.required_row_idx[u];
+        if (row < 0 || row >= static_cast<int>(plan.row_exp.size()))
+          NDA_RUNTIME_ERROR << "kernel_chain_t: required exponent mapped to an invalid row\n";
+        if (plan.row_exp[row] != required_exponents[u]) NDA_RUNTIME_ERROR << "kernel_chain_t: required exponent mapped to the wrong synthesized row\n";
+      }
+    }
+
+    // Greedy heuristic: first add every missing required exponent already
+    // reachable in one step; otherwise add one helper row. Helpers are scored
+    // by how many missing required exponents they unlock, with a large bonus
+    // if the helper is itself required and a tie-break toward smaller helpers.
     static rank_plan_t build_rank_plan(std::vector<unsigned long> const &required_exponents) {
       rank_plan_t plan;
       if (required_exponents.empty()) return plan;
@@ -181,6 +228,8 @@ namespace triqs::utility::nfft {
       required.erase(std::unique(required.begin(), required.end()), required.end());
 
       unsigned long const max_required = required.back();
+      // Allow helpers up to the next power of two so ladders like 1, 2, 4, ...
+      // remain available even when the largest required exponent is odd.
       unsigned long const helper_limit = std::max<unsigned long>(max_required, std::bit_ceil(max_required));
 
       plan.row_exp.push_back(1);
@@ -240,7 +289,7 @@ namespace triqs::utility::nfft {
           if (exp_to_row.contains(exp)) continue;
           all_done = false;
           if (auto op = find_current_step(exp)) {
-            // Best case: the next required exponent is already reachable from existing rows.
+            // Best case: a missing required exponent is already reachable in one step.
             add_row(exp, *op);
             progress                 = true;
           }
@@ -290,6 +339,7 @@ namespace triqs::utility::nfft {
       }
 
       for (std::size_t u = 0; u < required_exponents.size(); ++u) plan.required_row_idx[u] = exp_to_row.at(required_exponents[u]);
+      validate_rank_plan(plan, required_exponents);
 
       return plan;
     }
@@ -424,7 +474,7 @@ namespace triqs::utility::nfft {
         }
 
         dcomplex const fj = state.fx_arr[j];
-        poet::dynamic_for<rank1_target_unroll, 1>(int64_t{0}, n_targets, [&](int64_t d) {
+        poet::dynamic_for<rank1_target_unroll>(int64_t{0}, n_targets, [&](int64_t d) {
           // Each target picks the synthesized row it needs and optionally conjugates it.
           dcomplex pow = tbl[row_offset_ptr[d] / max_simd_source_block];
           fiw_ptr[d] += fj * (conj_ptr[d] ? std::conj(pow) : pow);

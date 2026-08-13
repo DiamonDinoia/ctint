@@ -9,6 +9,7 @@
 #include <array>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <vector>
 #include <triqs/mesh/matsubara_freq.hpp>
@@ -98,8 +99,45 @@ namespace triqs::utility::nfft {
     return 6;
   }
 
-  // NAF (Non-Adjacent Form) decomposition of n into signed binary digits.
-  // Returns encoded digits: k for +1 at bit k, -(k+1) for -1 at bit k.
+  // Compute the NAF (Non-Adjacent Form) digits of `n` in increasing bit order:
+  //
+  //   n = Σ_k ε_k 2^k,   ε_k in {-1, 0, 1},
+  //
+  // with no adjacent nonzero digits. We store only the nonzero digits:
+  //   k      -> ε_k = +1,
+  //   -(k+1) -> ε_k = -1.
+  //
+  // `compute_naf(0)` returns an empty vector. The direct NFFT kernels only call
+  // this for `|2m+1| >= 1`, so their reconstruction code always sees at least
+  // one digit.
+  inline void validate_naf_digits(unsigned long n, std::vector<int> const &digits) {
+    if (n == 0) {
+      if (!digits.empty()) NDA_RUNTIME_ERROR << "compute_naf: zero must produce an empty digit list\n";
+      return;
+    }
+
+    if (digits.empty()) NDA_RUNTIME_ERROR << "compute_naf: positive input produced an empty digit list\n";
+
+    unsigned long plus_sum  = 0;
+    unsigned long minus_sum = 0;
+    int prev_k              = -2;
+    for (int digit : digits) {
+      int const k = digit >= 0 ? digit : -(digit + 1);
+      if (k < 0 || k >= std::numeric_limits<unsigned long>::digits) NDA_RUNTIME_ERROR << "compute_naf: bit index out of range\n";
+      if (k <= prev_k) NDA_RUNTIME_ERROR << "compute_naf: digits must be stored in increasing bit order\n";
+      if (k == prev_k + 1) NDA_RUNTIME_ERROR << "compute_naf: adjacent nonzero digits violate the NAF invariant\n";
+
+      unsigned long const term = 1UL << k;
+      if (digit >= 0)
+        plus_sum += term;
+      else
+        minus_sum += term;
+      prev_k = k;
+    }
+
+    if (plus_sum < minus_sum || plus_sum - minus_sum != n) NDA_RUNTIME_ERROR << "compute_naf: encoded digits do not reconstruct the input exponent\n";
+  }
+
   inline std::vector<int> compute_naf(unsigned long n) {
     std::vector<int> digits;
     long sn = static_cast<long>(n);
@@ -110,6 +148,7 @@ namespace triqs::utility::nfft {
         sn -= r;
       }
     }
+    validate_naf_digits(n, digits);
     return digits;
   }
 
@@ -172,7 +211,9 @@ namespace triqs::utility::nfft {
   static constexpr std::size_t simd_size = cbatch::size;
 
   // Number of target accumulators kept live to expose ILP in the direct kernels.
-  static constexpr int ilp_unroll = poet::vector_register_count() <= 16 ? 2 : 4;
+  // Older versions sized this from a POET register-count helper; the current
+  // POET API no longer exposes that query, so keep a fixed conservative value.
+  static constexpr int ilp_unroll = 4;
 
   // Accumulate
   //
